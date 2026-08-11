@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Kinder Kalender</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Kinder Kalender">
+<meta name="theme-color" content="#3a3a3f">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <button id="settingsBtn" class="icon-btn" aria-label="Einstellungen">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <circle cx="12" cy="12" r="3"/>
+          <circle cx="12" cy="12" r="7.2"/>
+          <line x1="12" y1="1.5" x2="12" y2="4.3"/>
+          <line x1="12" y1="19.7" x2="12" y2="22.5"/>
+          <line x1="1.5" y1="12" x2="4.3" y2="12"/>
+          <line x1="19.7" y1="12" x2="22.5" y2="12"/>
+          <line x1="4.5" y1="4.5" x2="6.4" y2="6.4"/>
+          <line x1="17.6" y1="17.6" x2="19.5" y2="19.5"/>
+          <line x1="19.5" y1="4.5" x2="17.6" y2="6.4"/>
+          <line x1="6.4" y1="17.6" x2="4.5" y2="19.5"/>
+        </svg>
+      </button>
+      <div class="month-nav">
+        <button id="prevMonth" class="icon-btn" aria-label="Vorheriger Monat">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 6 9 12 15 18"/>
+          </svg>
+        </button>
+        <button id="nextMonth" class="icon-btn" aria-label="Nächster Monat">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="9 6 15 12 9 18"/>
+          </svg>
+        </button>
+      </div>
+      <button id="shareBtn" class="icon-btn" aria-label="Teilen">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3v12"/>
+          <polyline points="8 7 12 3 16 7"/>
+          <path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/>
+        </svg>
+      </button>
+    </header>
+
+    <main>
+      <div id="calendarCard" class="calendar-card">
+        <h1 id="monthTitle" class="month-title"></h1>
+        <div class="weekday-row" id="weekdayRow"></div>
+        <div class="day-grid" id="dayGrid"></div>
+      </div>
+
+      <div class="stats-row">
+        <span class="stat-chip">
+          <span class="dot" id="mineStatDot"></span>
+          <span id="mineStatLabel"></span>
+        </span>
+        <span class="stat-chip">
+          <span class="dot" id="exStatDot"></span>
+          <span id="exStatLabel"></span>
+        </span>
+      </div>
+    </main>
+
+    <footer class="brush-bar">
+      <button class="brush-btn" id="mineBrush">
+        <span class="dot" id="mineDot"></span>
+        <span id="mineLabel">Ich</span>
+      </button>
+      <button class="brush-btn" id="exBrush">
+        <span class="dot" id="exDot"></span>
+        <span id="exLabel">Ex</span>
+      </button>
+    </footer>
+  </div>
+
+  <dialog id="settingsDialog" class="settings-dialog">
+    <form method="dialog" class="settings-form">
+      <h2>Einstellungen</h2>
+      <div class="person-group">
+        <span class="group-label">Person 1</span>
+        <input type="text" id="mineNameInput" maxlength="20" placeholder="Name">
+        <input type="color" id="mineColorInput">
+      </div>
+      <div class="person-group">
+        <span class="group-label">Person 2</span>
+        <input type="text" id="exNameInput" maxlength="20" placeholder="Name">
+        <input type="color" id="exColorInput">
+      </div>
+
+      <h2>Daten</h2>
+      <p class="settings-hint">Alles liegt nur lokal auf diesem Gerät. Sichern, bevor du Safari-Daten löschst oder das Handy wechselst.</p>
+      <div class="settings-actions">
+        <button type="button" class="secondary-btn" id="restoreBtn">Wiederherstellen</button>
+        <button type="button" class="secondary-btn" id="exportBtn">Sichern</button>
+      </div>
+
+      <button type="submit" class="primary-btn">Fertig</button>
+    </form>
+  </dialog>
+
+  <dialog id="noteDialog" class="settings-dialog">
+    <form method="dialog" class="settings-form">
+      <h2 id="noteDialogTitle">Notiz</h2>
+      <label>
+        Notiz
+        <input type="text" id="noteInput" maxlength="60" placeholder="z. B. Kinderarzt 15 Uhr">
+      </label>
+      <div class="settings-actions">
+        <button type="submit" value="save" class="primary-btn">Speichern</button>
+        <button type="submit" value="delete" class="secondary-btn">Löschen</button>
+      </div>
+    </form>
+  </dialog>
+
+  <input type="file" id="restoreInput" accept="application/json" style="display:none;">
+
+  <canvas id="shareCanvas" style="display:none;"></canvas>
+
+  <script src="app.js"></script>
+</body>
+</html>
