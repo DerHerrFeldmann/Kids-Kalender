@@ -26,6 +26,16 @@
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+input,
+textarea {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
 }
 
 html, body {
@@ -88,6 +98,7 @@ main {
   border-radius: 18px;
   overflow: hidden;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  touch-action: pan-y;
 }
 
 .month-title {
@@ -131,9 +142,6 @@ main {
   appearance: none;
   -webkit-appearance: none;
   font: inherit;
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  user-select: none;
   touch-action: manipulation;
 }
 

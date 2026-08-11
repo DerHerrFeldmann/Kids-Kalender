@@ -601,18 +601,70 @@ function handleRestoreFile(event) {
   reader.readAsText(file);
 }
 
+function changeMonth(delta) {
+  state.displayedMonth = addMonths(state.displayedMonth, delta);
+  render();
+}
+
+const SWIPE_THRESHOLD = 60;
+
+/**
+ * A horizontal drag on the calendar switches months, like a native paging
+ * gesture. It also has to interrupt whatever the day-cell underneath was
+ * about to do (tap-to-color or a pending long-press note), since a real
+ * swipe usually starts on top of a cell.
+ */
+function initSwipeNavigation() {
+  const card = document.getElementById("calendarCard");
+  let startX = null;
+  let startY = null;
+  let isSwiping = false;
+
+  card.addEventListener("pointerdown", (event) => {
+    startX = event.clientX;
+    startY = event.clientY;
+    isSwiping = false;
+  });
+
+  card.addEventListener("pointermove", (event) => {
+    if (startX === null || isSwiping) return;
+    const dx = event.clientX - startX;
+    const dy = event.clientY - startY;
+    if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      isSwiping = true;
+      if (longPressTimer) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
+      longPressFired = true; // swallow the click a real drag would otherwise leave behind
+    }
+  });
+
+  card.addEventListener("pointerup", (event) => {
+    if (isSwiping) {
+      const dx = event.clientX - startX;
+      if (dx <= -SWIPE_THRESHOLD) changeMonth(1);
+      else if (dx >= SWIPE_THRESHOLD) changeMonth(-1);
+    }
+    startX = null;
+    startY = null;
+    isSwiping = false;
+  });
+
+  card.addEventListener("pointercancel", () => {
+    startX = null;
+    startY = null;
+    isSwiping = false;
+  });
+}
+
 function init() {
   loadState();
   render();
+  initSwipeNavigation();
 
-  document.getElementById("prevMonth").addEventListener("click", () => {
-    state.displayedMonth = addMonths(state.displayedMonth, -1);
-    render();
-  });
-  document.getElementById("nextMonth").addEventListener("click", () => {
-    state.displayedMonth = addMonths(state.displayedMonth, 1);
-    render();
-  });
+  document.getElementById("prevMonth").addEventListener("click", () => changeMonth(-1));
+  document.getElementById("nextMonth").addEventListener("click", () => changeMonth(1));
 
   document.getElementById("p1Brush").addEventListener("click", () => {
     state.activeBrush = "p1";
