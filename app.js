@@ -15,8 +15,8 @@ const state = {
   // side of the diagonal split.
   splitOrder: {},
   settings: {
-    mineName: "Ich",
-    exName: "Ex",
+    mineName: "Papa",
+    exName: "Mama",
     mineColor: "#a3cf8f",
     exColor: "#f7dd86",
   },
@@ -442,9 +442,9 @@ async function shareCalendar() {
 // `fallback` marks name fields, which get trimmed and defaulted; color
 // inputs always yield a valid hex value, so they're taken as-is.
 const SETTINGS_FIELDS = [
-  { settingsKey: "mineName", inputId: "mineNameInput", fallback: "Ich" },
+  { settingsKey: "mineName", inputId: "mineNameInput", fallback: "Papa" },
   { settingsKey: "mineColor", inputId: "mineColorInput" },
-  { settingsKey: "exName", inputId: "exNameInput", fallback: "Ex" },
+  { settingsKey: "exName", inputId: "exNameInput", fallback: "Mama" },
   { settingsKey: "exColor", inputId: "exColorInput" },
 ];
 
