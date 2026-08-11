@@ -607,42 +607,68 @@ function changeMonth(delta) {
 }
 
 const FLIP_ANGLE = 80; // degrees; stop short of 90 so the card never renders edge-on
-const FLIP_DURATION = 180; // ms per half of the flip
+const FLIP_DURATION = 180; // ms for a button-triggered flip half, or a snap-back
+const DRAG_FLIP_RANGE = 200; // px of drag needed to reach the full FLIP_ANGLE
+
+function isCardFlipping() {
+  return document.getElementById("calendarCard").classList.contains("flipping");
+}
+
+function setCardFlip(angle) {
+  const card = document.getElementById("calendarCard");
+  const brightness = 1 - 0.3 * Math.min(Math.abs(angle) / FLIP_ANGLE, 1);
+  card.style.transform = `rotateY(${angle}deg)`;
+  card.style.filter = `brightness(${brightness})`;
+}
+
+/** Animates the card to `angle`, calling `onDone` once the transition settles. */
+function animateCardFlip(angle, duration, onDone) {
+  const card = document.getElementById("calendarCard");
+  card.style.transition = `transform ${duration}ms ease-out, filter ${duration}ms ease-out`;
+  requestAnimationFrame(() => setCardFlip(angle));
+  card.addEventListener("transitionend", function onEnd() {
+    card.removeEventListener("transitionend", onEnd);
+    if (onDone) onDone();
+  });
+}
 
 /**
- * Turns the calendar card like a page: rotates away on its vertical axis,
- * swaps the month while the card is edge-on (and therefore invisible), then
- * rotates the new month back in from the opposite side.
+ * Turns the calendar card the rest of the way like a page, starting from
+ * `fromAngle` (0 for a button tap, or wherever a drag left off): rotates on
+ * to the edge, swaps the month while the card is edge-on (and therefore
+ * invisible), then rotates the new month back in from the opposite side.
  */
-function flipToMonth(delta) {
+function flipToMonth(delta, fromAngle = 0) {
   const card = document.getElementById("calendarCard");
-  if (card.classList.contains("flipping")) return;
   card.classList.add("flipping");
 
   const outAngle = delta > 0 ? -FLIP_ANGLE : FLIP_ANGLE;
-  card.style.transition = `transform ${FLIP_DURATION}ms ease-in, filter ${FLIP_DURATION}ms ease-in`;
-  card.style.transform = `rotateY(${outAngle}deg)`;
-  card.style.filter = "brightness(0.7)";
+  card.style.transition = "none";
+  setCardFlip(fromAngle);
+  void card.offsetHeight; // force reflow so the line above isn't transitioned
 
-  card.addEventListener("transitionend", function onOutEnd() {
-    card.removeEventListener("transitionend", onOutEnd);
+  animateCardFlip(outAngle, FLIP_DURATION, () => {
     changeMonth(delta);
 
     card.style.transition = "none";
-    card.style.transform = `rotateY(${-outAngle}deg)`;
-    void card.offsetHeight; // force reflow so the jump above isn't transitioned
+    setCardFlip(-outAngle);
+    void card.offsetHeight;
 
-    requestAnimationFrame(() => {
-      card.style.transition = `transform ${FLIP_DURATION}ms ease-out, filter ${FLIP_DURATION}ms ease-out`;
-      card.style.transform = "rotateY(0deg)";
-      card.style.filter = "brightness(1)";
-
-      card.addEventListener("transitionend", function onInEnd() {
-        card.removeEventListener("transitionend", onInEnd);
-        card.style.transition = "";
-        card.classList.remove("flipping");
-      });
+    animateCardFlip(0, FLIP_DURATION, () => {
+      card.style.transition = "";
+      card.classList.remove("flipping");
     });
+  });
+}
+
+/** Snaps the card back flat without changing the month — a swipe that didn't clear the threshold. */
+function cancelFlip(fromAngle) {
+  const card = document.getElementById("calendarCard");
+  card.classList.add("flipping");
+  setCardFlip(fromAngle);
+  animateCardFlip(0, FLIP_DURATION, () => {
+    card.style.transition = "";
+    card.classList.remove("flipping");
   });
 }
 
@@ -650,51 +676,65 @@ const SWIPE_THRESHOLD = 60;
 
 /**
  * A horizontal drag on the calendar switches months, like a native paging
- * gesture. It also has to interrupt whatever the day-cell underneath was
- * about to do (tap-to-color or a pending long-press note), since a real
- * swipe usually starts on top of a cell.
+ * gesture. The card turns like a page in real time as it's dragged — it
+ * follows the finger 1:1 rather than waiting for release — and either
+ * completes the flip or springs back flat once you let go. It also has to
+ * interrupt whatever the day-cell underneath was about to do (tap-to-color
+ * or a pending long-press note), since a real swipe usually starts on top
+ * of a cell.
  */
 function initSwipeNavigation() {
   const card = document.getElementById("calendarCard");
   let startX = null;
   let startY = null;
   let isSwiping = false;
+  let dragAngle = 0;
 
   card.addEventListener("pointerdown", (event) => {
+    if (isCardFlipping()) return;
     startX = event.clientX;
     startY = event.clientY;
     isSwiping = false;
   });
 
   card.addEventListener("pointermove", (event) => {
-    if (startX === null || isSwiping) return;
+    if (startX === null) return;
     const dx = event.clientX - startX;
     const dy = event.clientY - startY;
-    if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+    if (!isSwiping) {
+      if (Math.abs(dx) <= 10 || Math.abs(dx) <= Math.abs(dy) * 1.5) return;
       isSwiping = true;
+      card.classList.add("flipping");
+      card.style.transition = "none";
       if (longPressTimer) {
         clearTimeout(longPressTimer);
         longPressTimer = null;
       }
       longPressFired = true; // swallow the click a real drag would otherwise leave behind
     }
+    dragAngle = Math.max(-FLIP_ANGLE, Math.min(FLIP_ANGLE, (dx / DRAG_FLIP_RANGE) * FLIP_ANGLE));
+    setCardFlip(dragAngle);
   });
 
   card.addEventListener("pointerup", (event) => {
     if (isSwiping) {
       const dx = event.clientX - startX;
-      if (dx <= -SWIPE_THRESHOLD) flipToMonth(1);
-      else if (dx >= SWIPE_THRESHOLD) flipToMonth(-1);
+      if (dx <= -SWIPE_THRESHOLD) flipToMonth(1, dragAngle);
+      else if (dx >= SWIPE_THRESHOLD) flipToMonth(-1, dragAngle);
+      else cancelFlip(dragAngle);
     }
     startX = null;
     startY = null;
     isSwiping = false;
+    dragAngle = 0;
   });
 
   card.addEventListener("pointercancel", () => {
+    if (isSwiping) cancelFlip(dragAngle);
     startX = null;
     startY = null;
     isSwiping = false;
+    dragAngle = 0;
   });
 }
 
@@ -703,8 +743,12 @@ function init() {
   render();
   initSwipeNavigation();
 
-  document.getElementById("prevMonth").addEventListener("click", () => flipToMonth(-1));
-  document.getElementById("nextMonth").addEventListener("click", () => flipToMonth(1));
+  document.getElementById("prevMonth").addEventListener("click", () => {
+    if (!isCardFlipping()) flipToMonth(-1);
+  });
+  document.getElementById("nextMonth").addEventListener("click", () => {
+    if (!isCardFlipping()) flipToMonth(1);
+  });
 
   document.getElementById("p1Brush").addEventListener("click", () => {
     state.activeBrush = "p1";
