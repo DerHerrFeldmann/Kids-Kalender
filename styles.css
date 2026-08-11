@@ -91,6 +91,7 @@ main {
   display: flex;
   flex-direction: column;
   padding: 0 16px;
+  perspective: 1200px;
 }
 
 .calendar-card {
@@ -99,6 +100,8 @@ main {
   overflow: hidden;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
   touch-action: pan-y;
+  transform-style: preserve-3d;
+  backface-visibility: hidden;
 }
 
 .month-title {

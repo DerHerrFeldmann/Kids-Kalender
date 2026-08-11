@@ -606,6 +606,46 @@ function changeMonth(delta) {
   render();
 }
 
+const FLIP_ANGLE = 80; // degrees; stop short of 90 so the card never renders edge-on
+const FLIP_DURATION = 180; // ms per half of the flip
+
+/**
+ * Turns the calendar card like a page: rotates away on its vertical axis,
+ * swaps the month while the card is edge-on (and therefore invisible), then
+ * rotates the new month back in from the opposite side.
+ */
+function flipToMonth(delta) {
+  const card = document.getElementById("calendarCard");
+  if (card.classList.contains("flipping")) return;
+  card.classList.add("flipping");
+
+  const outAngle = delta > 0 ? -FLIP_ANGLE : FLIP_ANGLE;
+  card.style.transition = `transform ${FLIP_DURATION}ms ease-in, filter ${FLIP_DURATION}ms ease-in`;
+  card.style.transform = `rotateY(${outAngle}deg)`;
+  card.style.filter = "brightness(0.7)";
+
+  card.addEventListener("transitionend", function onOutEnd() {
+    card.removeEventListener("transitionend", onOutEnd);
+    changeMonth(delta);
+
+    card.style.transition = "none";
+    card.style.transform = `rotateY(${-outAngle}deg)`;
+    void card.offsetHeight; // force reflow so the jump above isn't transitioned
+
+    requestAnimationFrame(() => {
+      card.style.transition = `transform ${FLIP_DURATION}ms ease-out, filter ${FLIP_DURATION}ms ease-out`;
+      card.style.transform = "rotateY(0deg)";
+      card.style.filter = "brightness(1)";
+
+      card.addEventListener("transitionend", function onInEnd() {
+        card.removeEventListener("transitionend", onInEnd);
+        card.style.transition = "";
+        card.classList.remove("flipping");
+      });
+    });
+  });
+}
+
 const SWIPE_THRESHOLD = 60;
 
 /**
@@ -643,8 +683,8 @@ function initSwipeNavigation() {
   card.addEventListener("pointerup", (event) => {
     if (isSwiping) {
       const dx = event.clientX - startX;
-      if (dx <= -SWIPE_THRESHOLD) changeMonth(1);
-      else if (dx >= SWIPE_THRESHOLD) changeMonth(-1);
+      if (dx <= -SWIPE_THRESHOLD) flipToMonth(1);
+      else if (dx >= SWIPE_THRESHOLD) flipToMonth(-1);
     }
     startX = null;
     startY = null;
@@ -663,8 +703,8 @@ function init() {
   render();
   initSwipeNavigation();
 
-  document.getElementById("prevMonth").addEventListener("click", () => changeMonth(-1));
-  document.getElementById("nextMonth").addEventListener("click", () => changeMonth(1));
+  document.getElementById("prevMonth").addEventListener("click", () => flipToMonth(-1));
+  document.getElementById("nextMonth").addEventListener("click", () => flipToMonth(1));
 
   document.getElementById("p1Brush").addEventListener("click", () => {
     state.activeBrush = "p1";
