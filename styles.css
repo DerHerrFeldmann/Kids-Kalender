@@ -92,7 +92,12 @@ main {
   display: flex;
   flex-direction: column;
   padding: 0 16px;
-  perspective: 1200px;
+}
+
+.calendar-viewport {
+  position: relative;
+  overflow: hidden;
+  touch-action: pan-y;
 }
 
 .calendar-card {
@@ -100,9 +105,14 @@ main {
   border-radius: 18px;
   overflow: hidden;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
-  touch-action: pan-y;
-  transform-style: preserve-3d;
-  backface-visibility: hidden;
+}
+
+.calendar-card--peek {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
 }
 
 .month-title {

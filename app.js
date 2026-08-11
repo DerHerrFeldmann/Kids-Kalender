@@ -266,6 +266,62 @@ function updateBrushActiveStyles() {
   }
 }
 
+/** Builds a single day cell, styled but without the interactive listeners (added separately for the live grid). */
+function buildDayCell(date, current) {
+  const cell = document.createElement("button");
+  cell.className = "day-cell";
+  if (!current) {
+    cell.classList.add("outside");
+  }
+  const { owner, hasNote, split } = describeCell(date);
+  if (owner !== "none") {
+    cell.classList.add(owner);
+  }
+  if (split) {
+    cell.style.setProperty("--cell-first", split.first);
+    cell.style.setProperty("--cell-second", split.second);
+  }
+  const num = document.createElement("span");
+  num.className = "num";
+  num.textContent = String(date.getDate());
+  cell.appendChild(num);
+  if (hasNote) {
+    const dot = document.createElement("span");
+    dot.className = "note-dot";
+    cell.appendChild(dot);
+  }
+  return cell;
+}
+
+/** Builds a static, non-interactive calendar card for `month` — used as the sliding preview during a swipe. */
+function buildCardContent(month) {
+  const card = document.createElement("div");
+  card.className = "calendar-card";
+
+  const title = document.createElement("h1");
+  title.className = "month-title";
+  title.textContent = monthTitle(month);
+  card.appendChild(title);
+
+  const weekdayRow = document.createElement("div");
+  weekdayRow.className = "weekday-row";
+  for (const symbol of WEEKDAY_SYMBOLS) {
+    const span = document.createElement("span");
+    span.textContent = symbol;
+    weekdayRow.appendChild(span);
+  }
+  card.appendChild(weekdayRow);
+
+  const grid = document.createElement("div");
+  grid.className = "day-grid";
+  for (const { date, current } of buildMonthCells(month)) {
+    grid.appendChild(buildDayCell(date, current));
+  }
+  card.appendChild(grid);
+
+  return card;
+}
+
 function render() {
   document.documentElement.style.setProperty("--p1-color", state.settings.p1Color);
   document.documentElement.style.setProperty("--p2-color", state.settings.p2Color);
@@ -291,28 +347,7 @@ function render() {
   const grid = document.getElementById("dayGrid");
   grid.innerHTML = "";
   for (const { date, current } of buildMonthCells(state.displayedMonth)) {
-    const cell = document.createElement("button");
-    cell.className = "day-cell";
-    if (!current) {
-      cell.classList.add("outside");
-    }
-    const { owner, hasNote, split } = describeCell(date);
-    if (owner !== "none") {
-      cell.classList.add(owner);
-    }
-    if (split) {
-      cell.style.setProperty("--cell-first", split.first);
-      cell.style.setProperty("--cell-second", split.second);
-    }
-    const num = document.createElement("span");
-    num.className = "num";
-    num.textContent = String(date.getDate());
-    cell.appendChild(num);
-    if (hasNote) {
-      const dot = document.createElement("span");
-      dot.className = "note-dot";
-      cell.appendChild(dot);
-    }
+    const cell = buildDayCell(date, current);
 
     cell.addEventListener("pointerdown", () => {
       longPressFired = false;
@@ -606,105 +641,150 @@ function changeMonth(delta) {
   render();
 }
 
-const FLIP_ANGLE = 80; // degrees; stop short of 90 so the card never renders edge-on
-const FLIP_DURATION = 180; // ms for a button-triggered flip half, or a snap-back
-const DRAG_FLIP_RANGE = 200; // px of drag needed to reach the full FLIP_ANGLE
+const SWIPE_THRESHOLD = 60;
+const SLIDE_DURATION = 220; // ms for a button-triggered slide, or a drag's remaining distance
 
-function isCardFlipping() {
-  return document.getElementById("calendarCard").classList.contains("flipping");
+function isViewportSliding() {
+  return document.getElementById("calendarViewport").classList.contains("sliding");
 }
 
-function setCardFlip(angle) {
-  const card = document.getElementById("calendarCard");
-  const brightness = 1 - 0.3 * Math.min(Math.abs(angle) / FLIP_ANGLE, 1);
-  card.style.transform = `rotateY(${angle}deg)`;
-  card.style.filter = `brightness(${brightness})`;
-}
-
-/** Animates the card to `angle`, calling `onDone` once the transition settles. */
-function animateCardFlip(angle, duration, onDone) {
-  const card = document.getElementById("calendarCard");
-  card.style.transition = `transform ${duration}ms ease-out, filter ${duration}ms ease-out`;
-  requestAnimationFrame(() => setCardFlip(angle));
-  card.addEventListener("transitionend", function onEnd() {
-    card.removeEventListener("transitionend", onEnd);
-    if (onDone) onDone();
-  });
+/** Positions the live card and its preview neighbor for a given horizontal drag offset `dx`. */
+function positionSlide(card, peekCard, peekDelta, dx, width) {
+  const peekRestDx = peekDelta > 0 ? width : -width;
+  card.style.transform = `translateX(${dx}px)`;
+  peekCard.style.transform = `translateX(${peekRestDx + dx}px)`;
 }
 
 /**
- * Turns the calendar card the rest of the way like a page, starting from
- * `fromAngle` (0 for a button tap, or wherever a drag left off): rotates on
- * to the edge, swaps the month while the card is edge-on (and therefore
- * invisible), then rotates the new month back in from the opposite side.
+ * Slides the calendar card the rest of the way off-screen to reveal `delta`
+ * months away, like a page being pushed out while the next one is pushed in
+ * from the other edge. `fromDx`/`peekCard` let a drag in progress (which
+ * already built its own preview and moved partway) hand off into the same
+ * motion instead of jumping; omit them for a plain button tap.
  */
-function flipToMonth(delta, fromAngle = 0) {
+function slideToMonth(delta, fromDx = 0, existingPeekCard = null) {
+  const viewport = document.getElementById("calendarViewport");
   const card = document.getElementById("calendarCard");
-  card.classList.add("flipping");
+  const width = viewport.getBoundingClientRect().width;
+  const targetDx = delta > 0 ? -width : width;
+  const peekRestDx = delta > 0 ? width : -width;
 
-  const outAngle = delta > 0 ? -FLIP_ANGLE : FLIP_ANGLE;
-  card.style.transition = "none";
-  setCardFlip(fromAngle);
-  void card.offsetHeight; // force reflow so the line above isn't transitioned
+  viewport.classList.add("sliding");
+  const peekCard = existingPeekCard || buildCardContent(addMonths(state.displayedMonth, delta));
+  peekCard.classList.add("calendar-card--peek");
+  if (!existingPeekCard) viewport.appendChild(peekCard);
 
-  animateCardFlip(outAngle, FLIP_DURATION, () => {
+  const finish = () => {
     changeMonth(delta);
-
+    peekCard.remove();
     card.style.transition = "none";
-    setCardFlip(-outAngle);
-    void card.offsetHeight;
-
-    animateCardFlip(0, FLIP_DURATION, () => {
-      card.style.transition = "";
-      card.classList.remove("flipping");
-    });
-  });
-}
-
-/** Snaps the card back flat without changing the month — a swipe that didn't clear the threshold. */
-function cancelFlip(fromAngle) {
-  const card = document.getElementById("calendarCard");
-  card.classList.add("flipping");
-  setCardFlip(fromAngle);
-  animateCardFlip(0, FLIP_DURATION, () => {
+    card.style.transform = "translateX(0px)";
+    void card.offsetHeight; // force reflow so the reset above isn't transitioned
     card.style.transition = "";
-    card.classList.remove("flipping");
+    viewport.classList.remove("sliding");
+  };
+
+  card.style.transition = "none";
+  peekCard.style.transition = "none";
+  positionSlide(card, peekCard, delta, fromDx, width);
+  void card.offsetHeight;
+
+  if (Math.abs(fromDx - targetDx) < 1) {
+    finish(); // already fully there (e.g. a drag that reached the edge) — nothing left to animate
+    return;
+  }
+
+  card.style.transition = `transform ${SLIDE_DURATION}ms ease-out`;
+  peekCard.style.transition = `transform ${SLIDE_DURATION}ms ease-out`;
+  requestAnimationFrame(() => {
+    card.style.transform = `translateX(${targetDx}px)`;
+    peekCard.style.transform = "translateX(0px)";
+  });
+
+  card.addEventListener("transitionend", function onEnd() {
+    card.removeEventListener("transitionend", onEnd);
+    finish();
   });
 }
 
-const SWIPE_THRESHOLD = 60;
+/** Slides the card and its preview back flat without changing the month — a drag that didn't clear the threshold. */
+function cancelSlide(fromDx, peekCard, peekDelta, width) {
+  const viewport = document.getElementById("calendarViewport");
+  const card = document.getElementById("calendarCard");
+
+  const finish = () => {
+    peekCard.remove();
+    card.style.transition = "none";
+    card.style.transform = "translateX(0px)";
+    void card.offsetHeight; // force reflow so the reset above isn't transitioned
+    card.style.transition = "";
+    viewport.classList.remove("sliding");
+  };
+
+  if (Math.abs(fromDx) < 1) {
+    finish();
+    return;
+  }
+
+  card.style.transition = `transform ${SLIDE_DURATION}ms ease-out`;
+  peekCard.style.transition = `transform ${SLIDE_DURATION}ms ease-out`;
+  requestAnimationFrame(() => {
+    positionSlide(card, peekCard, peekDelta, 0, width);
+  });
+
+  card.addEventListener("transitionend", function onEnd() {
+    card.removeEventListener("transitionend", onEnd);
+    finish();
+  });
+}
 
 /**
  * A horizontal drag on the calendar switches months, like a native paging
- * gesture. The card turns like a page in real time as it's dragged — it
- * follows the finger 1:1 rather than waiting for release — and either
- * completes the flip or springs back flat once you let go. It also has to
- * interrupt whatever the day-cell underneath was about to do (tap-to-color
- * or a pending long-press note), since a real swipe usually starts on top
- * of a cell.
+ * gesture: the next or previous month's card slides in from the edge in
+ * real time as it's dragged — it follows the finger 1:1 rather than waiting
+ * for release — and either finishes sliding into place or springs back flat
+ * once you let go. It also has to interrupt whatever the day-cell underneath
+ * was about to do (tap-to-color or a pending long-press note), since a real
+ * swipe usually starts on top of a cell.
  */
 function initSwipeNavigation() {
+  const viewport = document.getElementById("calendarViewport");
   const card = document.getElementById("calendarCard");
   let startX = null;
   let startY = null;
   let isSwiping = false;
-  let dragAngle = 0;
+  let width = 0;
+  let peekCard = null;
+  let peekDelta = 0;
+  let lastDx = 0;
 
-  card.addEventListener("pointerdown", (event) => {
-    if (isCardFlipping()) return;
+  const ensurePeek = (delta) => {
+    if (peekCard && peekDelta === delta) return;
+    if (peekCard) peekCard.remove();
+    peekDelta = delta;
+    peekCard = buildCardContent(addMonths(state.displayedMonth, delta));
+    peekCard.classList.add("calendar-card--peek");
+    peekCard.style.transition = "none";
+    viewport.appendChild(peekCard);
+  };
+
+  viewport.addEventListener("pointerdown", (event) => {
+    if (isViewportSliding()) return;
     startX = event.clientX;
     startY = event.clientY;
     isSwiping = false;
   });
 
-  card.addEventListener("pointermove", (event) => {
+  viewport.addEventListener("pointermove", (event) => {
     if (startX === null) return;
     const dx = event.clientX - startX;
     const dy = event.clientY - startY;
     if (!isSwiping) {
       if (Math.abs(dx) <= 10 || Math.abs(dx) <= Math.abs(dy) * 1.5) return;
       isSwiping = true;
-      card.classList.add("flipping");
+      viewport.setPointerCapture(event.pointerId); // keep receiving move/up even once the finger strays outside the card
+      viewport.classList.add("sliding");
+      width = viewport.getBoundingClientRect().width;
       card.style.transition = "none";
       if (longPressTimer) {
         clearTimeout(longPressTimer);
@@ -712,29 +792,35 @@ function initSwipeNavigation() {
       }
       longPressFired = true; // swallow the click a real drag would otherwise leave behind
     }
-    dragAngle = Math.max(-FLIP_ANGLE, Math.min(FLIP_ANGLE, (dx / DRAG_FLIP_RANGE) * FLIP_ANGLE));
-    setCardFlip(dragAngle);
+    const clampedDx = Math.max(-width, Math.min(width, dx));
+    lastDx = clampedDx;
+    ensurePeek(clampedDx < 0 ? 1 : -1);
+    positionSlide(card, peekCard, peekDelta, clampedDx, width);
   });
 
-  card.addEventListener("pointerup", (event) => {
+  viewport.addEventListener("pointerup", (event) => {
     if (isSwiping) {
-      const dx = event.clientX - startX;
-      if (dx <= -SWIPE_THRESHOLD) flipToMonth(1, dragAngle);
-      else if (dx >= SWIPE_THRESHOLD) flipToMonth(-1, dragAngle);
-      else cancelFlip(dragAngle);
+      const dx = Math.max(-width, Math.min(width, event.clientX - startX));
+      if (dx <= -SWIPE_THRESHOLD) slideToMonth(1, dx, peekDelta === 1 ? peekCard : null);
+      else if (dx >= SWIPE_THRESHOLD) slideToMonth(-1, dx, peekDelta === -1 ? peekCard : null);
+      else cancelSlide(dx, peekCard, peekDelta, width);
     }
     startX = null;
     startY = null;
     isSwiping = false;
-    dragAngle = 0;
+    peekCard = null;
+    peekDelta = 0;
+    lastDx = 0;
   });
 
-  card.addEventListener("pointercancel", () => {
-    if (isSwiping) cancelFlip(dragAngle);
+  viewport.addEventListener("pointercancel", () => {
+    if (isSwiping) cancelSlide(lastDx, peekCard, peekDelta, width);
     startX = null;
     startY = null;
     isSwiping = false;
-    dragAngle = 0;
+    peekCard = null;
+    peekDelta = 0;
+    lastDx = 0;
   });
 }
 
@@ -744,10 +830,10 @@ function init() {
   initSwipeNavigation();
 
   document.getElementById("prevMonth").addEventListener("click", () => {
-    if (!isCardFlipping()) flipToMonth(-1);
+    if (!isViewportSliding()) slideToMonth(-1);
   });
   document.getElementById("nextMonth").addEventListener("click", () => {
-    if (!isCardFlipping()) flipToMonth(1);
+    if (!isViewportSliding()) slideToMonth(1);
   });
 
   document.getElementById("p1Brush").addEventListener("click", () => {
