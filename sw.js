@@ -1,4 +1,4 @@
-const CACHE_NAME = "kk-cache-v1";
+const CACHE_NAME = "kk-cache-v2";
 const ASSETS = [
   "./",
   "./index.html",
@@ -24,22 +24,18 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Stale-while-revalidate: serve the cached copy instantly, but always
-// re-fetch in the background and update the cache for next time — so a
-// new deploy is picked up on the following load instead of needing
-// CACHE_NAME bumped by hand.
+// Network-first: this app gets iterated on often, so a deploy should show up
+// the moment the phone is next online, not on some later reload. The cache
+// only kicks in as a fallback when there's no connection at all.
 self.addEventListener("fetch", (event) => {
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const network = fetch(event.request)
-        .then((response) => {
-          if (response.ok) {
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, response.clone()));
-          }
-          return response;
-        })
-        .catch(() => cached);
-      return cached || network;
-    })
+    fetch(event.request)
+      .then((response) => {
+        if (response.ok) {
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, response.clone()));
+        }
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });

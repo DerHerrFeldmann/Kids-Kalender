@@ -688,6 +688,15 @@ function init() {
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js").catch(() => {});
+    // Once a newly-installed service worker takes over, the page it took
+    // over on is still running the old cached app.js — reload once so the
+    // new version actually shows up instead of waiting for the next launch.
+    let reloadedForNewVersion = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (reloadedForNewVersion) return;
+      reloadedForNewVersion = true;
+      window.location.reload();
+    });
   }
 }
 
