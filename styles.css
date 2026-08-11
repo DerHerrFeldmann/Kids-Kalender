@@ -6,8 +6,8 @@
   --header-dark: #3a3a3f;
   --line: rgba(0, 0, 0, 0.1);
   --chip-bg: #e9e9ec;
-  --mine-color: #a3cf8f;
-  --ex-color: #f7dd86;
+  --p1-color: #a3cf8f;
+  --p2-color: #f7dd86;
   --outside-opacity: 0.45;
   color-scheme: light dark;
 }
@@ -163,23 +163,23 @@ main {
   opacity: var(--outside-opacity);
 }
 
-.day-cell.mine {
-  background: var(--mine-color);
+.day-cell.p1 {
+  background: var(--p1-color);
 }
 
-.day-cell.ex {
-  background: var(--ex-color);
+.day-cell.p2 {
+  background: var(--p2-color);
 }
 
 .day-cell.both {
-  background: var(--cell-first, var(--ex-color));
+  background: var(--cell-first, var(--p2-color));
 }
 
 .day-cell.both::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: var(--cell-second, var(--mine-color));
+  background: var(--cell-second, var(--p1-color));
   clip-path: polygon(0 0, 100% 0, 100% 100%);
 }
 

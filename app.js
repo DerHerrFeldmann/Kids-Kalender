@@ -10,17 +10,17 @@ const state = {
   displayedMonth: startOfMonth(new Date()),
   entries: {},
   notes: {},
-  // For "both" days: which brush ("mine" or "ex") was already on the day
+  // For "both" days: which brush ("p1" or "p2") was already on the day
   // before the tap that combined it, so that color stays on the left/first
   // side of the diagonal split.
   splitOrder: {},
   settings: {
-    mineName: "Papa",
-    exName: "Mama",
-    mineColor: "#a3cf8f",
-    exColor: "#f7dd86",
+    p1Name: "Papa",
+    p2Name: "Mama",
+    p1Color: "#a3cf8f",
+    p2Color: "#f7dd86",
   },
-  activeBrush: "mine",
+  activeBrush: "p1",
 };
 
 // Set while a long-press note-dialog is open, so the click event that
@@ -65,9 +65,9 @@ function ownerAt(date) {
  */
 function splitColorsFor(date) {
   const recorded = state.splitOrder[dateKey(date)];
-  const firstBrush = recorded === "mine" || recorded === "ex" ? recorded : "ex";
-  const secondBrush = firstBrush === "mine" ? "ex" : "mine";
-  const colorOf = (brush) => (brush === "mine" ? state.settings.mineColor : state.settings.exColor);
+  const firstBrush = recorded === "p1" || recorded === "p2" ? recorded : "p2";
+  const secondBrush = firstBrush === "p1" ? "p2" : "p1";
+  const colorOf = (brush) => (brush === "p1" ? state.settings.p1Color : state.settings.p2Color);
   return { first: colorOf(firstBrush), second: colorOf(secondBrush) };
 }
 
@@ -116,14 +116,14 @@ function monthTitle(date) {
 }
 
 const COMBINE_TABLE = {
-  "none:mine": "mine",
-  "none:ex": "ex",
-  "mine:mine": "none",
-  "ex:ex": "none",
-  "mine:ex": "both",
-  "ex:mine": "both",
-  "both:mine": "ex",
-  "both:ex": "mine",
+  "none:p1": "p1",
+  "none:p2": "p2",
+  "p1:p1": "none",
+  "p2:p2": "none",
+  "p1:p2": "both",
+  "p2:p1": "both",
+  "both:p1": "p2",
+  "both:p2": "p1",
 };
 
 function nextOwner(current, brush) {
@@ -135,18 +135,18 @@ function monthStats(displayedMonth) {
   const year = displayedMonth.getFullYear();
   const month = displayedMonth.getMonth();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  let mine = 0;
-  let ex = 0;
+  let p1 = 0;
+  let p2 = 0;
   for (let day = 1; day <= daysInMonth; day++) {
     const owner = ownerAt(new Date(year, month, day));
-    if (owner === "mine") mine += 1;
-    else if (owner === "ex") ex += 1;
+    if (owner === "p1") p1 += 1;
+    else if (owner === "p2") p2 += 1;
     else if (owner === "both") {
-      mine += 0.5;
-      ex += 0.5;
+      p1 += 0.5;
+      p2 += 0.5;
     }
   }
-  return { mine, ex };
+  return { p1, p2 };
 }
 
 function formatNights(n) {
@@ -174,20 +174,50 @@ function saveJSON(stateKey) {
   localStorage.setItem(JSON_FIELDS[stateKey], JSON.stringify(state[stateKey]));
 }
 
+// One-time migration from the original "mine"/"ex" naming to the neutral
+// "p1"/"p2" scheme, so a calendar already filled in before this rename
+// keeps working instead of losing its data.
+function migrateLegacyOwner(value) {
+  if (value === "mine") return "p1";
+  if (value === "ex") return "p2";
+  return value;
+}
+
+function migrateLegacyOwnerMap(map) {
+  const migrated = {};
+  for (const [key, value] of Object.entries(map)) {
+    migrated[key] = migrateLegacyOwner(value);
+  }
+  return migrated;
+}
+
+const LEGACY_SETTINGS_KEYS = {
+  mineName: "p1Name",
+  exName: "p2Name",
+  mineColor: "p1Color",
+  exColor: "p2Color",
+};
+
 function loadState() {
   for (const [stateKey, storageKey] of Object.entries(JSON_FIELDS)) {
-    state[stateKey] = loadJSON(storageKey, {});
+    const loaded = loadJSON(storageKey, {});
+    state[stateKey] = stateKey === "settings" ? loaded : migrateLegacyOwnerMap(loaded);
   }
   try {
     const savedSettings = JSON.parse(localStorage.getItem("kk.settings"));
     if (savedSettings) {
       state.settings = { ...state.settings, ...savedSettings };
+      for (const [legacyKey, newKey] of Object.entries(LEGACY_SETTINGS_KEYS)) {
+        if (savedSettings[legacyKey] !== undefined) {
+          state.settings[newKey] = savedSettings[legacyKey];
+        }
+      }
     }
   } catch {
     // ignore malformed settings, defaults stay in place
   }
-  const savedBrush = localStorage.getItem("kk.activeBrush");
-  if (savedBrush === "mine" || savedBrush === "ex") {
+  const savedBrush = migrateLegacyOwner(localStorage.getItem("kk.activeBrush"));
+  if (savedBrush === "p1" || savedBrush === "p2") {
     state.activeBrush = savedBrush;
   }
 }
@@ -209,7 +239,7 @@ function applyBrush(date) {
   } else {
     state.entries[key] = updated;
   }
-  if (updated === "both" && (current === "mine" || current === "ex")) {
+  if (updated === "both" && (current === "p1" || current === "p2")) {
     // records the tap order for splitColorsFor()
     state.splitOrder[key] = current;
   } else if (updated !== "both") {
@@ -222,8 +252,8 @@ function applyBrush(date) {
 
 function updateBrushActiveStyles() {
   const buttons = [
-    [document.getElementById("mineBrush"), "mine", state.settings.mineColor],
-    [document.getElementById("exBrush"), "ex", state.settings.exColor],
+    [document.getElementById("p1Brush"), "p1", state.settings.p1Color],
+    [document.getElementById("p2Brush"), "p2", state.settings.p2Color],
   ];
   for (const [btn, brush, color] of buttons) {
     if (state.activeBrush === brush) {
@@ -237,8 +267,8 @@ function updateBrushActiveStyles() {
 }
 
 function render() {
-  document.documentElement.style.setProperty("--mine-color", state.settings.mineColor);
-  document.documentElement.style.setProperty("--ex-color", state.settings.exColor);
+  document.documentElement.style.setProperty("--p1-color", state.settings.p1Color);
+  document.documentElement.style.setProperty("--p2-color", state.settings.p2Color);
 
   document.getElementById("monthTitle").textContent = monthTitle(state.displayedMonth);
 
@@ -312,15 +342,15 @@ function render() {
   }
 
   const stats = monthStats(state.displayedMonth);
-  document.getElementById("mineStatDot").style.background = state.settings.mineColor;
-  document.getElementById("exStatDot").style.background = state.settings.exColor;
-  document.getElementById("mineStatLabel").textContent = `${state.settings.mineName}: ${formatNights(stats.mine)}`;
-  document.getElementById("exStatLabel").textContent = `${state.settings.exName}: ${formatNights(stats.ex)}`;
+  document.getElementById("p1StatDot").style.background = state.settings.p1Color;
+  document.getElementById("p2StatDot").style.background = state.settings.p2Color;
+  document.getElementById("p1StatLabel").textContent = `${state.settings.p1Name}: ${formatNights(stats.p1)}`;
+  document.getElementById("p2StatLabel").textContent = `${state.settings.p2Name}: ${formatNights(stats.p2)}`;
 
-  document.getElementById("mineLabel").textContent = state.settings.mineName;
-  document.getElementById("exLabel").textContent = state.settings.exName;
-  document.getElementById("mineDot").style.background = state.settings.mineColor;
-  document.getElementById("exDot").style.background = state.settings.exColor;
+  document.getElementById("p1Label").textContent = state.settings.p1Name;
+  document.getElementById("p2Label").textContent = state.settings.p2Name;
+  document.getElementById("p1Dot").style.background = state.settings.p1Color;
+  document.getElementById("p2Dot").style.background = state.settings.p2Color;
   updateBrushActiveStyles();
 }
 
@@ -331,13 +361,13 @@ function drawCellBackground(ctx, rect, cell) {
     ctx.fillRect(x, y, w, h);
     return;
   }
-  if (cell.owner === "mine") {
-    ctx.fillStyle = state.settings.mineColor;
+  if (cell.owner === "p1") {
+    ctx.fillStyle = state.settings.p1Color;
     ctx.fillRect(x, y, w, h);
     return;
   }
-  if (cell.owner === "ex") {
-    ctx.fillStyle = state.settings.exColor;
+  if (cell.owner === "p2") {
+    ctx.fillStyle = state.settings.p2Color;
     ctx.fillRect(x, y, w, h);
     return;
   }
@@ -442,10 +472,10 @@ async function shareCalendar() {
 // `fallback` marks name fields, which get trimmed and defaulted; color
 // inputs always yield a valid hex value, so they're taken as-is.
 const SETTINGS_FIELDS = [
-  { settingsKey: "mineName", inputId: "mineNameInput", fallback: "Papa" },
-  { settingsKey: "mineColor", inputId: "mineColorInput" },
-  { settingsKey: "exName", inputId: "exNameInput", fallback: "Mama" },
-  { settingsKey: "exColor", inputId: "exColorInput" },
+  { settingsKey: "p1Name", inputId: "p1NameInput", fallback: "Papa" },
+  { settingsKey: "p1Color", inputId: "p1ColorInput" },
+  { settingsKey: "p2Name", inputId: "p2NameInput", fallback: "Mama" },
+  { settingsKey: "p2Color", inputId: "p2ColorInput" },
 ];
 
 function populateSettingsForm() {
@@ -502,7 +532,7 @@ function closeNoteDialog() {
 
 async function exportBackup() {
   const payload = {
-    version: 1,
+    version: 2,
     entries: state.entries,
     notes: state.notes,
     splitOrder: state.splitOrder,
@@ -552,10 +582,15 @@ function handleRestoreFile(event) {
     if (!window.confirm("Aktuelle Kalendereinträge und Einstellungen durch die Sicherung ersetzen?")) {
       return;
     }
-    state.entries = data.entries || {};
+    state.entries = migrateLegacyOwnerMap(data.entries || {});
     state.notes = data.notes || {};
-    state.splitOrder = data.splitOrder || {};
+    state.splitOrder = migrateLegacyOwnerMap(data.splitOrder || {});
     state.settings = { ...state.settings, ...(data.settings || {}) };
+    for (const [legacyKey, newKey] of Object.entries(LEGACY_SETTINGS_KEYS)) {
+      if (data.settings && data.settings[legacyKey] !== undefined) {
+        state.settings[newKey] = data.settings[legacyKey];
+      }
+    }
     saveJSON("entries");
     saveJSON("notes");
     saveJSON("splitOrder");
@@ -579,13 +614,13 @@ function init() {
     render();
   });
 
-  document.getElementById("mineBrush").addEventListener("click", () => {
-    state.activeBrush = "mine";
+  document.getElementById("p1Brush").addEventListener("click", () => {
+    state.activeBrush = "p1";
     saveBrush();
     updateBrushActiveStyles();
   });
-  document.getElementById("exBrush").addEventListener("click", () => {
-    state.activeBrush = "ex";
+  document.getElementById("p2Brush").addEventListener("click", () => {
+    state.activeBrush = "p2";
     saveBrush();
     updateBrushActiveStyles();
   });
