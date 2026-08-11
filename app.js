@@ -667,26 +667,37 @@ function slideToMonth(delta, fromDx = 0, existingPeekCard = null) {
   const card = document.getElementById("calendarCard");
   const width = viewport.getBoundingClientRect().width;
   const targetDx = delta > 0 ? -width : width;
-  const peekRestDx = delta > 0 ? width : -width;
 
   viewport.classList.add("sliding");
   const peekCard = existingPeekCard || buildCardContent(addMonths(state.displayedMonth, delta));
   peekCard.classList.add("calendar-card--peek");
   if (!existingPeekCard) viewport.appendChild(peekCard);
 
+  // Months have 5 or 6 week rows, so the card's own natural height can
+  // differ from the incoming one — read both so the viewport's height (and
+  // therefore everything below it, like the stats row) can be animated
+  // right along with the slide instead of jumping once it lands.
+  const cardHeight = card.getBoundingClientRect().height;
+  const peekHeight = peekCard.getBoundingClientRect().height;
+
   const finish = () => {
     changeMonth(delta);
     peekCard.remove();
     card.style.transition = "none";
     card.style.transform = "translateX(0px)";
+    viewport.style.transition = "none";
+    viewport.style.height = "";
     void card.offsetHeight; // force reflow so the reset above isn't transitioned
     card.style.transition = "";
+    viewport.style.transition = "";
     viewport.classList.remove("sliding");
   };
 
   card.style.transition = "none";
   peekCard.style.transition = "none";
+  viewport.style.transition = "none";
   positionSlide(card, peekCard, delta, fromDx, width);
+  viewport.style.height = `${cardHeight + (peekHeight - cardHeight) * (Math.abs(fromDx) / width)}px`;
   void card.offsetHeight;
 
   if (Math.abs(fromDx - targetDx) < 1) {
@@ -696,9 +707,11 @@ function slideToMonth(delta, fromDx = 0, existingPeekCard = null) {
 
   card.style.transition = `transform ${SLIDE_DURATION}ms ease-out`;
   peekCard.style.transition = `transform ${SLIDE_DURATION}ms ease-out`;
+  viewport.style.transition = `height ${SLIDE_DURATION}ms ease-out`;
   requestAnimationFrame(() => {
     card.style.transform = `translateX(${targetDx}px)`;
     peekCard.style.transform = "translateX(0px)";
+    viewport.style.height = `${peekHeight}px`;
   });
 
   card.addEventListener("transitionend", function onEnd() {
@@ -716,8 +729,11 @@ function cancelSlide(fromDx, peekCard, peekDelta, width) {
     peekCard.remove();
     card.style.transition = "none";
     card.style.transform = "translateX(0px)";
+    viewport.style.transition = "none";
+    viewport.style.height = "";
     void card.offsetHeight; // force reflow so the reset above isn't transitioned
     card.style.transition = "";
+    viewport.style.transition = "";
     viewport.classList.remove("sliding");
   };
 
@@ -726,10 +742,14 @@ function cancelSlide(fromDx, peekCard, peekDelta, width) {
     return;
   }
 
+  const cardHeight = card.getBoundingClientRect().height;
+
   card.style.transition = `transform ${SLIDE_DURATION}ms ease-out`;
   peekCard.style.transition = `transform ${SLIDE_DURATION}ms ease-out`;
+  viewport.style.transition = `height ${SLIDE_DURATION}ms ease-out`;
   requestAnimationFrame(() => {
     positionSlide(card, peekCard, peekDelta, 0, width);
+    viewport.style.height = `${cardHeight}px`;
   });
 
   card.addEventListener("transitionend", function onEnd() {
@@ -785,6 +805,7 @@ function initSwipeNavigation() {
       viewport.setPointerCapture(event.pointerId); // keep receiving move/up even once the finger strays outside the card
       viewport.classList.add("sliding");
       width = viewport.getBoundingClientRect().width;
+      viewport.style.height = `${card.getBoundingClientRect().height}px`; // pin explicit height so it can be animated instead of jumping
       card.style.transition = "none";
       if (longPressTimer) {
         clearTimeout(longPressTimer);
@@ -795,6 +816,13 @@ function initSwipeNavigation() {
     const clampedDx = Math.max(-width, Math.min(width, dx));
     lastDx = clampedDx;
     ensurePeek(clampedDx < 0 ? 1 : -1);
+    // Months have 5 or 6 week rows, so the incoming card's natural height
+    // can differ from the current one — blend the viewport towards it as
+    // the drag progresses instead of snapping once it lands.
+    const cardHeight = card.getBoundingClientRect().height;
+    const peekHeight = peekCard.getBoundingClientRect().height;
+    const progress = Math.abs(clampedDx) / width;
+    viewport.style.height = `${cardHeight + (peekHeight - cardHeight) * progress}px`;
     positionSlide(card, peekCard, peekDelta, clampedDx, width);
   });
 
