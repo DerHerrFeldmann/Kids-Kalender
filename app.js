@@ -524,13 +524,29 @@ function openSettings() {
   document.getElementById("settingsDialog").showModal();
 }
 
-function closeSettings() {
-  for (const { settingsKey, inputId, fallback } of SETTINGS_FIELDS) {
-    const value = document.getElementById(inputId).value;
-    state.settings[settingsKey] = fallback ? value.trim() || fallback : value;
-  }
+// Saved on every keystroke/color pick, not just on dialog close: closing a
+// <dialog> relies on a "close" event that a background app-kill (e.g. iOS
+// suspending the PWA before the user's tap on "Fertig" is fully processed)
+// can skip entirely, which used to silently drop the change.
+function commitSettingField(settingsKey, inputId, fallback) {
+  const value = document.getElementById(inputId).value;
+  state.settings[settingsKey] = fallback ? value.trim() || fallback : value;
   saveSettings();
   render();
+}
+
+function wireSettingsInputs() {
+  for (const { settingsKey, inputId, fallback } of SETTINGS_FIELDS) {
+    document
+      .getElementById(inputId)
+      .addEventListener("input", () => commitSettingField(settingsKey, inputId, fallback));
+  }
+}
+
+function closeSettings() {
+  for (const { settingsKey, inputId, fallback } of SETTINGS_FIELDS) {
+    commitSettingField(settingsKey, inputId, fallback);
+  }
 }
 
 function formatFullDate(date) {
@@ -876,6 +892,7 @@ function init() {
   });
 
   document.getElementById("settingsBtn").addEventListener("click", openSettings);
+  wireSettingsInputs();
   document.getElementById("settingsDialog").addEventListener("close", closeSettings);
   document.getElementById("shareBtn").addEventListener("click", shareCalendar);
 
