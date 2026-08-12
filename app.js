@@ -537,9 +537,14 @@ function commitSettingField(settingsKey, inputId, fallback) {
 
 function wireSettingsInputs() {
   for (const { settingsKey, inputId, fallback } of SETTINGS_FIELDS) {
-    document
-      .getElementById(inputId)
-      .addEventListener("input", () => commitSettingField(settingsKey, inputId, fallback));
+    const input = document.getElementById(inputId);
+    const commit = () => commitSettingField(settingsKey, inputId, fallback);
+    // Some WebKit versions are inconsistent about firing "input" for
+    // <input type="color">'s native swatch sheet — "change" is the one
+    // event every browser reliably fires once a color is picked, so both
+    // are bound rather than betting on just one.
+    input.addEventListener("input", commit);
+    input.addEventListener("change", commit);
   }
 }
 
@@ -902,7 +907,12 @@ function init() {
   document.getElementById("restoreInput").addEventListener("change", handleRestoreFile);
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
+    navigator.serviceWorker.register("sw.js").then((registration) => {
+      // iOS home-screen installs are slow to notice a changed sw.js on their
+      // own — nudge an update check on every launch instead of waiting for
+      // whatever interval WebKit decides on internally.
+      registration.update().catch(() => {});
+    }).catch(() => {});
     // Once a newly-installed service worker takes over, the page it took
     // over on is still running the old cached app.js — reload once so the
     // new version actually shows up instead of waiting for the next launch.
