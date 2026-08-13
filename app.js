@@ -394,13 +394,19 @@ function sanitizeSettings(settings) {
   return settings;
 }
 
+// TEMP DEBUG (remove once the iOS settings-persistence bug is found): records
+// what loadState()/saveSettings() actually saw/threw, surfaced in the
+// settings dialog via renderDebugInfo() so it's readable without dev tools.
+const debugLog = { rawOnLoad: undefined, loadError: null, lastSaveError: null };
+
 function loadState() {
   for (const [stateKey, storageKey] of Object.entries(JSON_FIELDS)) {
     const loaded = loadJSON(storageKey, {});
     state[stateKey] = OWNER_MAP_FIELDS.has(stateKey) ? migrateLegacyOwnerMap(loaded) : loaded;
   }
   try {
-    const savedSettings = JSON.parse(localStorage.getItem("kk.settings"));
+    debugLog.rawOnLoad = localStorage.getItem("kk.settings");
+    const savedSettings = JSON.parse(debugLog.rawOnLoad);
     if (savedSettings) {
       state.settings = { ...state.settings, ...savedSettings };
       for (const [legacyKey, newKey] of Object.entries(LEGACY_SETTINGS_KEYS)) {
@@ -410,8 +416,9 @@ function loadState() {
       }
       sanitizeSettings(state.settings);
     }
-  } catch {
+  } catch (err) {
     // ignore malformed settings, defaults stay in place
+    debugLog.loadError = String(err && err.message || err);
   }
   const savedBrush = migrateLegacyOwner(localStorage.getItem("kk.activeBrush"));
   if (savedBrush === "p1" || savedBrush === "p2") {
@@ -420,7 +427,12 @@ function loadState() {
 }
 
 function saveSettings() {
-  localStorage.setItem("kk.settings", JSON.stringify(state.settings));
+  try {
+    localStorage.setItem("kk.settings", JSON.stringify(state.settings));
+    debugLog.lastSaveError = null;
+  } catch (err) {
+    debugLog.lastSaveError = String(err && err.message || err);
+  }
 }
 
 function saveBrush() {
@@ -979,8 +991,32 @@ function populateSettingsForm() {
   }
 }
 
+// TEMP DEBUG (remove once the iOS settings-persistence bug is found).
+function renderDebugInfo() {
+  let writeTestResult = "?";
+  try {
+    localStorage.setItem("kk.__writetest__", "1");
+    writeTestResult = localStorage.getItem("kk.__writetest__") === "1" ? "ok" : "readback-mismatch";
+    localStorage.removeItem("kk.__writetest__");
+  } catch (err) {
+    writeTestResult = "FAILED: " + String((err && err.message) || err);
+  }
+  const lines = [
+    "UA: " + navigator.userAgent,
+    "standalone: " + (window.navigator.standalone === true),
+    "write-test just now: " + writeTestResult,
+    "kk.settings raw at load: " + JSON.stringify(debugLog.rawOnLoad),
+    "load error: " + (debugLog.loadError || "none"),
+    "last saveSettings error: " + (debugLog.lastSaveError || "none"),
+    "kk.settings raw right now: " + JSON.stringify(localStorage.getItem("kk.settings")),
+    "state.settings now: " + JSON.stringify(state.settings),
+  ];
+  document.getElementById("debugInfo").textContent = lines.join("\n");
+}
+
 function openSettings() {
   populateSettingsForm();
+  renderDebugInfo();
   const dialog = document.getElementById("settingsDialog");
   dialog.showModal();
   // Avoid auto-focusing the name text input (default first-focusable
@@ -1028,6 +1064,7 @@ function wireSettingsInputs() {
       document.documentElement.style.setProperty("--p2-color", state.settings.p2Color);
       applyInkVars();
       refreshChrome();
+      renderDebugInfo();
     };
     // Some WebKit versions are inconsistent about firing "input" for
     // <input type="color">'s native swatch sheet — "change" is the one
