@@ -2,24 +2,59 @@
   --bg: #f4f4f6;
   --card-bg: #ffffff;
   --ink: #1c1c1e;
-  --muted: #8e8e93;
-  --header-dark: #3a3a3f;
+  --muted: #595960;
+  --weekday-bg: #ececf0;
+  --weekend-bg: #f8f8fa;
+  --weekday-fg: #5b5b60;
   --line: rgba(0, 0, 0, 0.1);
   --chip-bg: #e9e9ec;
   --p1-color: #a3cf8f;
   --p2-color: #f7dd86;
-  --outside-opacity: 0.45;
+  --outside-opacity: 0.7;
+  /* Fallbacks for the very first paint before app.js's applyInkVars() runs;
+     match the defaults above (both light pastels), and are immediately
+     overwritten (and kept in sync with whatever the color wells pick) by
+     app.js — see inkFor()/applyInkVars(). */
+  --p1-ink: #1c1c1e;
+  --p1-ink-on: #ffffff;
+  --p2-ink: #1c1c1e;
+  --p2-ink-on: #ffffff;
+  --danger: #d70015;
   color-scheme: light dark;
+
+  /* 4px spacing scale — every gap/padding below snaps to one of these. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* Type scale — five steps, no ad-hoc sizes in between. */
+  --font-xs: 12px;
+  --font-sm: 14px;
+  --font-md: 16px;
+  --font-lg: 20px;
+  --font-xl: 28px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #000000;
+    --bg: #0b0b0d;
     --card-bg: #1c1c1e;
     --ink: #f2f2f7;
     --muted: #9a9aa0;
+    --weekday-bg: #101012;
+    --weekend-bg: #17171a;
+    --weekday-fg: #9a9aa0;
     --line: rgba(255, 255, 255, 0.14);
     --chip-bg: #2c2c2e;
+    --danger: #ff453a;
+  }
+
+  .calendar-card {
+    box-shadow: none;
+    border: 1px solid var(--line);
   }
 }
 
@@ -42,7 +77,7 @@ html, body {
   height: 100%;
   margin: 0;
   background: var(--bg);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Rounded", sans-serif;
+  font-family: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, sans-serif;
   overscroll-behavior: none;
   color: var(--ink);
 }
@@ -59,18 +94,18 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  padding: var(--space-3) var(--space-4);
   touch-action: manipulation;
 }
 
 .month-nav {
   display: flex;
-  gap: 18px;
+  gap: var(--space-4);
 }
 
 .topbar-end {
   display: flex;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .icon-btn {
@@ -78,7 +113,9 @@ html, body {
   -webkit-appearance: none;
   border: none;
   background: none;
-  padding: 8px;
+  padding: var(--space-2);
+  min-width: 44px;
+  min-height: 44px;
   line-height: 1;
   color: var(--ink);
   display: inline-flex;
@@ -88,12 +125,68 @@ html, body {
 }
 
 .icon-btn.active {
-  background: var(--chip-bg);
+  background: var(--ink);
+  color: var(--bg);
+  border: 1px solid var(--ink);
 }
 
 .icon-btn:disabled {
   opacity: 0.3;
   pointer-events: none;
+}
+
+.hint {
+  margin: 0 0 var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--chip-bg);
+  color: var(--ink);
+  font-size: var(--font-xs);
+  text-align: center;
+  border-radius: 10px;
+}
+
+.notes-hint-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: var(--space-2);
+  background: none;
+  border: none;
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: inherit;
+  font-size: var(--font-xs);
+  font-weight: 600;
+  text-decoration: underline;
+  color: var(--ink);
+  padding: var(--space-2) var(--space-3);
+  min-height: 44px;
+}
+
+.icon-btn:active,
+.brush-btn:active {
+  background: var(--chip-bg);
+  transform: scale(0.96);
+}
+
+/* No `transform` here (unlike .icon-btn/.brush-btn above): a day-cell press
+   can be the start of a paint drag, and elementFromPoint()-based hit-testing
+   in app.js relies on cells staying exactly where they're laid out. */
+.day-cell:active {
+  filter: brightness(0.94);
+}
+
+.icon-btn:focus-visible,
+.brush-btn:focus-visible,
+.day-cell:focus-visible,
+.primary-btn:focus-visible,
+.secondary-btn:focus-visible,
+.settings-form input:focus-visible,
+.text-btn:focus-visible,
+.notes-hint-dismiss:focus-visible,
+.today-btn:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
 }
 
 .icon-btn svg {
@@ -106,7 +199,7 @@ main {
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 0 16px;
+  padding: 0 var(--space-4);
 }
 
 .calendar-viewport {
@@ -131,25 +224,48 @@ main {
 
 .month-title {
   text-align: center;
-  font-size: 26px;
+  font-size: var(--font-xl);
   font-weight: 800;
   letter-spacing: 0.5px;
   margin: 0;
-  padding: 18px 0 14px;
+  padding: var(--space-4) 0 var(--space-3);
+}
+
+/* "Heute" pill: jumps back to the month containing today. Disabled (and
+   visually faded, like .icon-btn:disabled) while that month is already
+   displayed, so it never renders as a no-op tap target. */
+.today-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  border: none;
+  background: var(--chip-bg);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: var(--font-sm);
+  font-weight: 600;
+  padding: var(--space-2) var(--space-3);
+  min-height: 44px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.today-btn:disabled {
+  opacity: 0.3;
+  pointer-events: none;
 }
 
 .weekday-row {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  background: var(--header-dark);
+  background: var(--weekday-bg);
 }
 
 .weekday-row span {
   text-align: center;
-  color: #fff;
+  color: var(--weekday-fg);
   font-weight: 700;
-  font-size: 12px;
-  padding: 10px 0;
+  font-size: var(--font-xs);
+  padding: var(--space-2) 0;
   letter-spacing: 0.5px;
 }
 
@@ -182,28 +298,121 @@ main {
 
 .note-dot {
   position: absolute;
-  bottom: 6px;
-  right: 6px;
+  bottom: var(--space-1);
+  right: var(--space-1);
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #1c1c1e;
+  background: var(--ink);
   box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.85);
   z-index: 3;
 }
 
 .day-cell .num {
   position: absolute;
-  top: 6px;
-  left: 8px;
-  font-size: 14px;
+  top: var(--space-1);
+  left: var(--space-1);
+  width: 24px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--font-sm);
   font-weight: 600;
   color: var(--ink);
   z-index: 2;
 }
 
+/* Grid fills (.p1/.p2/.both) come from a free-choice color well (any hex),
+   so their ink/dot can't follow one hardcoded constant: it also must not
+   follow the global --ink, which flips with the color scheme independently
+   of the (unrelated) fill color. Each owner's ink (--p1-ink/--p2-ink) is
+   picked in app.js (inkFor()) to whichever of near-black/near-white
+   contrasts best against that owner's actual chosen fill. .both cells split
+   diagonally: .num sits over the overlay triangle (--cell-second-ink),
+   .note-dot over the base fill (--cell-first-ink) — see applyOwnerVisual(). */
+.day-cell.p1 .num {
+  color: var(--p1-ink);
+}
+
+.day-cell.p2 .num {
+  color: var(--p2-ink);
+}
+
+.day-cell.both .num {
+  color: var(--cell-second-ink, var(--p1-ink));
+}
+
+.day-cell.p1 .note-dot {
+  background: var(--p1-ink);
+}
+
+.day-cell.p2 .note-dot {
+  background: var(--p2-ink);
+}
+
+.day-cell.both .note-dot {
+  background: var(--cell-first-ink, var(--p2-ink));
+}
+
+/* Non-color cue for who owns a day (WCAG 1.4.1) — the owner's initial(s),
+   painted opposite the note-dot so both can coexist without overlapping. */
+.owner-mark {
+  position: absolute;
+  bottom: var(--space-1);
+  left: var(--space-1);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.day-cell.p1 .owner-mark {
+  color: var(--p1-ink);
+}
+
+.day-cell.p2 .owner-mark {
+  color: var(--p2-ink);
+}
+
+.day-cell.both .owner-mark {
+  color: var(--cell-first-ink, var(--p2-ink));
+}
+
 .day-cell.outside {
   opacity: var(--outside-opacity);
+}
+
+/* Weekend columns (Sat/Sun) recede slightly when unpainted; owner fills
+   (.p1/.p2/.both) still take precedence since they set their own background. */
+.day-grid > :nth-child(7n-1),
+.day-grid > :nth-child(7n) {
+  background: var(--weekend-bg);
+}
+
+/* Today's date number gets a filled ring so it can be spotted without
+   counting cells; sits on the number only, never the cell background. */
+.day-cell.today .num {
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--card-bg);
+}
+
+.day-cell.p1.today .num {
+  background: var(--p1-ink);
+  color: var(--p1-ink-on);
+}
+
+.day-cell.p2.today .num {
+  background: var(--p2-ink);
+  color: var(--p2-ink-on);
+}
+
+.day-cell.both.today .num {
+  background: var(--cell-second-ink, var(--p1-ink));
+  color: var(--cell-second-ink-on, var(--p1-ink-on));
 }
 
 .day-cell.p1 {
@@ -229,23 +438,40 @@ main {
 .handover-row {
   display: flex;
   justify-content: center;
-  padding: 14px 0 0;
+  padding: var(--space-3) 0 0;
 }
 
 .stats-row {
   display: flex;
-  gap: 10px;
+  gap: var(--space-2);
   justify-content: center;
-  padding: 14px 0 4px;
+  padding: var(--space-3) 0 var(--space-1);
 }
 
 .stat-chip {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
+  gap: var(--space-1);
+  font-size: var(--font-sm);
   font-weight: 600;
   color: var(--muted);
+  white-space: nowrap;
+}
+
+/* The handover line is the app's headline answer ("who has the kids next");
+   the counts below it are a secondary footnote. Promote it so it doesn't
+   read as just another muted chip. */
+#handoverRow .stat-chip {
+  font-size: var(--font-md);
+  color: var(--ink);
+}
+
+/* #handoverRow and #handoverPlaceholder are mutually exclusive (exactly one
+   is shown at a time) but share the same box model, so whichever one is
+   visible reserves the same height — the stats row below never shifts
+   depending on whether a handover currently exists. */
+#handoverPlaceholder .stat-chip {
+  font-size: var(--font-md);
 }
 
 .stat-chip .dot {
@@ -257,9 +483,18 @@ main {
 
 .brush-bar {
   display: flex;
-  gap: 12px;
-  padding: 16px;
+  padding: var(--space-4);
+  padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
   justify-content: center;
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  z-index: 1;
+}
+
+.brush-group {
+  display: flex;
+  gap: var(--space-3);
 }
 
 .brush-btn {
@@ -267,15 +502,19 @@ main {
   -webkit-appearance: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   border: 2px solid transparent;
-  background: var(--chip-bg);
+  background: transparent;
   border-radius: 14px;
-  padding: 10px 18px;
-  font-size: 15px;
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--font-md);
   font-weight: 600;
   color: var(--ink);
   font-family: inherit;
+}
+
+.brush-btn[aria-checked="true"] {
+  border-color: var(--ink);
 }
 
 .brush-btn .dot {
@@ -290,6 +529,8 @@ main {
   border-radius: 18px;
   padding: 0;
   width: min(340px, 90vw);
+  background: var(--card-bg);
+  color: var(--ink);
 }
 
 .settings-dialog::backdrop {
@@ -297,33 +538,33 @@ main {
 }
 
 .settings-form {
-  padding: 20px;
+  padding: var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--space-4);
 }
 
 .settings-form h2 {
-  margin: 0 0 4px;
-  font-size: 20px;
+  margin: 0;
+  font-size: var(--font-lg);
 }
 
 .settings-form label {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
+  gap: var(--space-1);
+  font-size: var(--font-sm);
   color: var(--muted);
 }
 
 .person-group {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .group-label {
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 700;
   color: var(--muted);
   text-transform: uppercase;
@@ -331,10 +572,11 @@ main {
 }
 
 .settings-form input[type="text"] {
-  padding: 10px 12px;
+  padding: var(--space-2) var(--space-3);
   border-radius: 10px;
   border: 1px solid var(--line);
-  font-size: 16px;
+  font-size: var(--font-md);
+  background: var(--card-bg);
   color: var(--ink);
 }
 
@@ -347,15 +589,15 @@ main {
 }
 
 .settings-hint {
-  margin: -6px 0 0;
-  font-size: 12px;
+  margin: 0;
+  font-size: var(--font-xs);
   color: var(--muted);
   line-height: 1.4;
 }
 
 .settings-actions {
   display: flex;
-  gap: 10px;
+  gap: var(--space-2);
 }
 
 /* Speichern comes first in the markup so pressing Enter in the note field
@@ -378,14 +620,14 @@ main {
   -webkit-appearance: none;
   border: none;
   border-radius: 12px;
-  padding: 12px;
-  font-size: 16px;
+  padding: var(--space-3);
+  font-size: var(--font-md);
   font-weight: 600;
   font-family: inherit;
 }
 
 .primary-btn {
-  margin-top: 8px;
+  margin-top: var(--space-2);
   background: var(--ink);
   color: var(--card-bg);
 }
@@ -393,4 +635,27 @@ main {
 .secondary-btn {
   background: var(--chip-bg);
   color: var(--ink);
+}
+
+/* De-emphasised destructive action: a plain text button, not a full-width
+   button competing visually with Speichern/Abbrechen. */
+.text-btn {
+  display: block;
+  width: 100%;
+  margin-top: var(--space-3);
+  background: none;
+  border: none;
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: inherit;
+  font-size: var(--font-sm);
+  padding: var(--space-2);
+}
+
+.text-btn[hidden] {
+  display: none;
+}
+
+.danger-btn {
+  color: var(--danger);
 }

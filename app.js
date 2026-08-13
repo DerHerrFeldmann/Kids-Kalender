@@ -13,6 +13,64 @@ const DEFAULT_SETTINGS = {
   p2Color: "#f7dd86",
 };
 
+// The two owner fills come from a free-choice <input type="color"> (any of
+// 16M hex values, see Einstellungen), so the day number/note-dot/today-ring
+// drawn on top of a fill can't stay legible with one hardcoded dark ink —
+// it has to be picked per fill. DARK_INK/LIGHT_INK are the only two inks we
+// ever use; inkFor() below picks whichever gives higher WCAG contrast
+// against a given fill.
+const DARK_INK = "#1c1c1e";
+const LIGHT_INK = "#ffffff";
+
+function hexToRgb(hex) {
+  let h = hex.slice(1);
+  if (h.length === 3 || h.length === 4) {
+    h = h.split("").map((c) => c + c).join("");
+  }
+  return {
+    r: parseInt(h.slice(0, 2), 16),
+    g: parseInt(h.slice(2, 4), 16),
+    b: parseInt(h.slice(4, 6), 16),
+  };
+}
+
+function relativeLuminance({ r, g, b }) {
+  const srgb = [r, g, b].map((c) => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * srgb[0] + 0.7152 * srgb[1] + 0.0722 * srgb[2];
+}
+
+function contrastRatio(lumA, lumB) {
+  const [lighter, darker] = lumA >= lumB ? [lumA, lumB] : [lumB, lumA];
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+/** Whichever of DARK_INK/LIGHT_INK reads better (WCAG contrast) on top of `fillHex`. */
+function inkFor(fillHex) {
+  const fillLum = relativeLuminance(hexToRgb(fillHex));
+  const darkContrast = contrastRatio(fillLum, relativeLuminance(hexToRgb(DARK_INK)));
+  const lightContrast = contrastRatio(fillLum, relativeLuminance(hexToRgb(LIGHT_INK)));
+  return darkContrast >= lightContrast ? DARK_INK : LIGHT_INK;
+}
+
+/** The ink to put on top of an inkFor(...)-colored surface itself (e.g. the digit inside the today-ring) — inkFor() only ever returns one of two fixed constants, so its "on" color is simply the other one. */
+function inkOn(ink) {
+  return ink === DARK_INK ? LIGHT_INK : DARK_INK;
+}
+
+/** Recomputes --p1-ink/--p2-ink (+ their "-on" counterparts for the today-ring digit) from the currently committed owner colors and pushes them onto the document, so painted-cell text stays legible no matter which hex the color wells picked. */
+function applyInkVars() {
+  const root = document.documentElement.style;
+  const p1Ink = inkFor(state.settings.p1Color);
+  const p2Ink = inkFor(state.settings.p2Color);
+  root.setProperty("--p1-ink", p1Ink);
+  root.setProperty("--p1-ink-on", inkOn(p1Ink));
+  root.setProperty("--p2-ink", p2Ink);
+  root.setProperty("--p2-ink-on", inkOn(p2Ink));
+}
+
 const state = {
   displayedMonth: startOfMonth(new Date()),
   entries: {},
@@ -277,6 +335,42 @@ const LEGACY_SETTINGS_KEYS = {
 
 const HEX_COLOR_RE = /^#[0-9a-f]{3,8}$/i;
 
+const OTHER_OWNER_COLOR_KEY = { p1Color: "p2Color", p2Color: "p1Color" };
+
+// Below this Euclidean RGB distance (max ~441.7), two owner colors read as
+// "the same" at a glance -- and colour is the *only* thing distinguishing
+// Person 1 from Person 2 anywhere in the UI (grid cells, stat dots, brush
+// dots, the diagonal "both" split), so anything this close makes those
+// undecodable.
+const MIN_OWNER_COLOR_DISTANCE = 60;
+
+function colorDistance(hexA, hexB) {
+  const a = hexToRgb(hexA);
+  const b = hexToRgb(hexB);
+  return Math.sqrt((a.r - b.r) ** 2 + (a.g - b.g) ** 2 + (a.b - b.b) ** 2);
+}
+
+function rgbToHex({ r, g, b }) {
+  return (
+    "#" +
+    [r, g, b]
+      .map((c) => Math.max(0, Math.min(255, Math.round(c))).toString(16).padStart(2, "0"))
+      .join("")
+  );
+}
+
+// If `hex` is too close to `otherHex` to stay visually distinguishable,
+// nudge it to its RGB inverse (guaranteed far away in color space), falling
+// back to whichever of black/white is furthest from `otherHex` for the rare
+// case where a color sits close to its own inverse (grays).
+function resolveOwnerColorCollision(hex, otherHex) {
+  if (colorDistance(hex, otherHex) >= MIN_OWNER_COLOR_DISTANCE) return hex;
+  const rgb = hexToRgb(hex);
+  const inverted = rgbToHex({ r: 255 - rgb.r, g: 255 - rgb.g, b: 255 - rgb.b });
+  if (colorDistance(inverted, otherHex) >= MIN_OWNER_COLOR_DISTANCE) return inverted;
+  return colorDistance("#000000", otherHex) >= colorDistance("#ffffff", otherHex) ? "#000000" : "#ffffff";
+}
+
 // Settings can come from localStorage or an imported backup file, both of
 // which a hand-edited/malicious file fully controls. Colors flow straight
 // into CSS custom properties (styles.css), so anything other than a plain
@@ -290,6 +384,10 @@ function sanitizeSettings(settings) {
       settings[key] = DEFAULT_SETTINGS[key];
     }
   }
+  // A hand-edited file (or one written before this check existed) can carry
+  // two identical/near-identical owner colors, which is just as undecodable
+  // as picking them live in the settings dialog -- resolve it the same way.
+  settings.p2Color = resolveOwnerColorCollision(settings.p2Color, settings.p1Color);
   for (const key of ["p1Name", "p2Name"]) {
     settings[key] = String(settings[key] ?? "").trim() || DEFAULT_SETTINGS[key];
   }
@@ -447,30 +545,81 @@ function updateBrushActiveStyles() {
     [document.getElementById("p2Brush"), "p2", state.settings.p2Color],
   ];
   for (const [btn, brush, color] of buttons) {
-    if (state.activeBrush === brush) {
-      btn.style.borderColor = color;
-      btn.style.background = `${color}33`;
-    } else {
-      btn.style.borderColor = "transparent";
-      btn.style.background = "";
-    }
+    const selected = state.activeBrush === brush;
+    btn.setAttribute("aria-checked", selected ? "true" : "false");
+    btn.tabIndex = selected ? 0 : -1;
+    btn.style.background = selected ? `${color}33` : "";
   }
 }
 
-/** Applies owner-dependent classes/colors to an already-built cell — reused to repaint a cell live during a paint drag without rebuilding the whole grid. */
+/** Textual equivalent of an owner's color, for aria-label — the color/split is otherwise the only cue for who has the child that day. */
+function ownerLabelText(owner) {
+  if (owner === "p1") return state.settings.p1Name;
+  if (owner === "p2") return state.settings.p2Name;
+  if (owner === "both") return `${state.settings.p1Name} und ${state.settings.p2Name}`;
+  return "nicht zugeteilt";
+}
+
+/** First letter of a person's name, upper-cased, for the in-cell owner glyph (falls back to "?" for an empty name). */
+function ownerInitial(name) {
+  return (String(name || "").trim().charAt(0) || "?").toUpperCase();
+}
+
+/** Visible, non-color cue for who owns a day — a same-color viewer, grayscale display or B&W print still needs a way to tell owners apart (WCAG 1.4.1), so this renders the owner's initial(s) in the cell alongside the fill color. */
+function ownerGlyph(owner) {
+  if (owner === "p1") return ownerInitial(state.settings.p1Name);
+  if (owner === "p2") return ownerInitial(state.settings.p2Name);
+  if (owner === "both") return `${ownerInitial(state.settings.p1Name)}${ownerInitial(state.settings.p2Name)}`;
+  return "";
+}
+
+/** Applies owner-dependent classes/colors to an already-built cell — reused to repaint a cell live during a paint drag without rebuilding the whole grid. Also (re)builds the aria-label, since ownership and note presence are otherwise conveyed only by color/opacity and a bare dot. */
 function applyOwnerVisual(cell, date) {
   cell.classList.remove("p1", "p2", "both");
-  const { owner, split } = describeCell(date);
+  const { owner, split, hasNote, key } = describeCell(date);
   if (owner !== "none") {
     cell.classList.add(owner);
   }
   if (split) {
     cell.style.setProperty("--cell-first", split.first);
     cell.style.setProperty("--cell-second", split.second);
+    // The diagonal split's ink can't come from the global --p1-ink/--p2-ink:
+    // .note-dot sits over the base fill (--cell-first) and .num sits over
+    // the overlay triangle (--cell-second, see styles.css), and either one
+    // can be either owner's color depending on splitOrder — so each side's
+    // ink has to be computed straight from that side's own actual fill.
+    cell.style.setProperty("--cell-first-ink", inkFor(split.first));
+    const secondInk = inkFor(split.second);
+    cell.style.setProperty("--cell-second-ink", secondInk);
+    cell.style.setProperty("--cell-second-ink-on", inkOn(secondInk));
   } else {
     cell.style.removeProperty("--cell-first");
     cell.style.removeProperty("--cell-second");
+    cell.style.removeProperty("--cell-first-ink");
+    cell.style.removeProperty("--cell-second-ink");
+    cell.style.removeProperty("--cell-second-ink-on");
   }
+  // Non-color cue for ownership (WCAG 1.4.1): the fill color alone doesn't
+  // survive a color-vision deficiency, a washed-out display or B&W print, so
+  // paint the owner's initial(s) on top of it too. aria-hidden since the
+  // cell's own aria-label already announces the owner in full.
+  let mark = cell.querySelector(".owner-mark");
+  if (owner === "none") {
+    if (mark) mark.remove();
+  } else {
+    if (!mark) {
+      mark = document.createElement("span");
+      mark.className = "owner-mark";
+      mark.setAttribute("aria-hidden", "true");
+      cell.appendChild(mark);
+    }
+    mark.textContent = ownerGlyph(owner);
+  }
+  let label = `${formatFullDate(date)}, ${ownerLabelText(owner)}`;
+  if (hasNote) label += `, Notiz: ${state.notes[key]}`;
+  if (cell.classList.contains("outside")) label += ", anderer Monat";
+  if (cell.classList.contains("today")) label += ", heute";
+  cell.setAttribute("aria-label", label);
 }
 
 /** Builds a single day cell, styled but without the interactive listeners (added separately for the live grid). */
@@ -480,8 +629,16 @@ function buildDayCell(date, current) {
   if (!current) {
     cell.classList.add("outside");
   }
+  if (dateKey(date) === dateKey(new Date())) {
+    cell.classList.add("today");
+    cell.setAttribute("aria-current", "date");
+  }
   const { key, hasNote } = describeCell(date);
   cell.dataset.date = key; // read back by paint-drag tracking, which finds cells via elementFromPoint rather than their own events
+  // Documents the Space-to-open-note keyboard shortcut for assistive tech,
+  // since it has no other discoverable affordance (see the keydown handler
+  // wired up in render()).
+  cell.setAttribute("aria-keyshortcuts", "Space");
   applyOwnerVisual(cell, date);
   const num = document.createElement("span");
   num.className = "num";
@@ -538,8 +695,11 @@ function deferToNextTask(fn) {
 function render() {
   document.documentElement.style.setProperty("--p1-color", state.settings.p1Color);
   document.documentElement.style.setProperty("--p2-color", state.settings.p2Color);
+  applyInkVars();
 
   document.getElementById("monthTitle").textContent = monthTitle(state.displayedMonth);
+  document.getElementById("todayBtn").disabled =
+    dateKey(state.displayedMonth) === dateKey(startOfMonth(new Date()));
 
   const weekdayRow = document.getElementById("weekdayRow");
   weekdayRow.innerHTML = "";
@@ -563,6 +723,12 @@ function render() {
   flushPaintDrag();
 
   const grid = document.getElementById("dayGrid");
+  // grid.innerHTML = "" below destroys whichever day-cell button currently
+  // has keyboard focus (e.g. after Escape-closing the note dialog opened
+  // via Space), silently stranding focus at <body> (WCAG 2.4.3). Remember
+  // which date was focused so it can be re-focused once the new cell for
+  // that date exists.
+  const focusedDate = document.activeElement?.closest?.(".day-cell")?.dataset.date;
   grid.innerHTML = "";
   grid.classList.toggle("paint-mode", paintModeActive);
   for (const { date, current } of buildMonthCells(state.displayedMonth)) {
@@ -612,6 +778,18 @@ function render() {
     cell.addEventListener("pointerup", cancelLongPress);
     cell.addEventListener("pointerleave", cancelLongPress);
     cell.addEventListener("pointercancel", cancelLongPress);
+    // Keyboard-only equivalent of the pointer long-press: a day cell is a
+    // <button>, so Enter/Space would otherwise only ever reach applyBrush
+    // via the synthetic click, leaving openNoteDialog completely
+    // unreachable without a pointer (WCAG 2.1.1). Space is free to
+    // repurpose here since the native click it would trigger is prevented;
+    // Enter keeps behaving like a tap (applyBrush), Space opens the note.
+    cell.addEventListener("keydown", (event) => {
+      if (event.key === " " || event.key === "Spacebar") {
+        event.preventDefault();
+        openNoteDialog(date);
+      }
+    });
     cell.addEventListener("click", () => {
       if (longPressFired) {
         longPressFired = false;
@@ -623,28 +801,45 @@ function render() {
     grid.appendChild(cell);
   }
 
+  if (focusedDate) {
+    grid.querySelector(`[data-date="${focusedDate}"]`)?.focus();
+  }
+
   refreshChrome();
 }
 
 /** The parts of render() that depend on entries/settings but not on the grid's own DOM — split out so a single-cell repaint (applyBrush) can refresh them without rebuilding all 42 cells. */
 function refreshChrome() {
+  // The handover chip always refers to "today" (the next real-world switch),
+  // while the stats row below refers to whichever month is displayed — these
+  // can be very different periods (e.g. browsing to next March). Word each
+  // row so its time scope is explicit, and reserve the handover row's height
+  // via a same-shaped placeholder (rather than collapsing it with
+  // display:none) so the stats row doesn't shift depending on whether a
+  // handover happens to exist right now.
   const handover = findNextHandover(new Date());
   const handoverRow = document.getElementById("handoverRow");
+  const handoverPlaceholder = document.getElementById("handoverPlaceholder");
   if (handover) {
     const name = handover.toOwner === "p1" ? state.settings.p1Name : state.settings.p2Name;
     const color = handover.toOwner === "p1" ? state.settings.p1Color : state.settings.p2Color;
     handoverRow.style.display = "";
+    handoverPlaceholder.style.display = "none";
     document.getElementById("handoverDot").style.background = color;
     document.getElementById("handoverLabel").textContent = `Wechsel zu ${name} am ${formatHandoverDate(handover.date)}`;
   } else {
     handoverRow.style.display = "none";
+    handoverPlaceholder.style.display = "";
   }
 
+  // The displayed month is already spelled out in #monthTitle right above
+  // this row, so repeating it verbatim in every chip just adds redundant,
+  // wrap-prone text — each chip only needs to state its own name/count.
   const stats = monthStats(state.displayedMonth);
   document.getElementById("p1StatDot").style.background = state.settings.p1Color;
   document.getElementById("p2StatDot").style.background = state.settings.p2Color;
-  document.getElementById("p1StatLabel").textContent = `${state.settings.p1Name}: ${formatNights(stats.p1)}`;
-  document.getElementById("p2StatLabel").textContent = `${state.settings.p2Name}: ${formatNights(stats.p2)}`;
+  document.getElementById("p1StatLabel").textContent = `${state.settings.p1Name} ${formatNights(stats.p1)} Nächte`;
+  document.getElementById("p2StatLabel").textContent = `${state.settings.p2Name} ${formatNights(stats.p2)} Nächte`;
 
   document.getElementById("p1Label").textContent = state.settings.p1Name;
   document.getElementById("p2Label").textContent = state.settings.p2Name;
@@ -702,7 +897,7 @@ function drawCalendarToCanvas(canvas) {
   ctx.fillRect(0, 0, width, height);
 
   ctx.fillStyle = "#1c1c1e";
-  ctx.font = "800 46px -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.font = "800 46px ui-rounded, \"SF Pro Rounded\", -apple-system, BlinkMacSystemFont, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(monthTitle(state.displayedMonth), width / 2, headerH / 2);
@@ -710,7 +905,7 @@ function drawCalendarToCanvas(canvas) {
   ctx.fillStyle = "#3a3a3f";
   ctx.fillRect(0, headerH, width, weekdayH);
   ctx.fillStyle = "#ffffff";
-  ctx.font = "700 20px -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.font = "700 20px ui-rounded, \"SF Pro Rounded\", -apple-system, BlinkMacSystemFont, sans-serif";
   WEEKDAY_SYMBOLS.forEach((symbol, i) => {
     ctx.fillText(symbol, i * cellW + cellW / 2, headerH + weekdayH / 2);
   });
@@ -725,7 +920,7 @@ function drawCalendarToCanvas(canvas) {
     const cellInfo = describeCell(date);
     drawCellBackground(ctx, { x, y, w: cellW, h: cellH }, cellInfo);
     ctx.fillStyle = "#1c1c1e";
-    ctx.font = "600 24px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.font = "600 24px ui-rounded, \"SF Pro Rounded\", -apple-system, BlinkMacSystemFont, sans-serif";
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
     ctx.fillText(String(date.getDate()), x + 10, y + 8);
@@ -786,7 +981,12 @@ function populateSettingsForm() {
 
 function openSettings() {
   populateSettingsForm();
-  document.getElementById("settingsDialog").showModal();
+  const dialog = document.getElementById("settingsDialog");
+  dialog.showModal();
+  // Avoid auto-focusing the name text input (default first-focusable
+  // behaviour of showModal()), which would pop the mobile keyboard over
+  // the backup/restore actions. Focus the dialog itself instead.
+  dialog.focus();
 }
 
 // Only updates state.settings; does not save or render, so callers can
@@ -795,8 +995,16 @@ function openSettings() {
 // callers skip the save+render entirely and de-duplicates the "input"/
 // "change" pair below (the second of the two is always a no-op commit).
 function commitSettingField(settingsKey, inputId, fallback) {
-  const value = document.getElementById(inputId).value;
-  const next = fallback ? value.trim() || fallback : value;
+  const input = document.getElementById(inputId);
+  const value = input.value;
+  let next = fallback ? value.trim() || fallback : value;
+  const otherColorKey = OTHER_OWNER_COLOR_KEY[settingsKey];
+  if (otherColorKey) {
+    next = resolveOwnerColorCollision(next, state.settings[otherColorKey]);
+    // Keep the color well's swatch honest about what actually got committed
+    // when the pick got nudged away from a collision.
+    if (next !== value) input.value = next;
+  }
   if (next === state.settings[settingsKey]) return false;
   state.settings[settingsKey] = next;
   return true;
@@ -818,6 +1026,7 @@ function wireSettingsInputs() {
       // that visibly stutter even though the grid sits behind the modal.
       document.documentElement.style.setProperty("--p1-color", state.settings.p1Color);
       document.documentElement.style.setProperty("--p2-color", state.settings.p2Color);
+      applyInkVars();
       refreshChrome();
     };
     // Some WebKit versions are inconsistent about firing "input" for
@@ -852,6 +1061,7 @@ function openNoteDialog(date) {
   dialog.returnValue = "";
   document.getElementById("noteDialogTitle").textContent = formatFullDate(date);
   document.getElementById("noteInput").value = state.notes[dateKey(date)] || "";
+  document.getElementById("noteDeleteBtn").hidden = !state.notes[dateKey(date)];
   dialog.showModal();
 }
 
@@ -886,17 +1096,24 @@ async function exportBackup() {
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
     try {
       await navigator.share({ files: [file], title: "Kinder Kalender Backup" });
+      window.alert("Sicherung gesendet.");
       return;
-    } catch {
-      // user cancelled the share sheet, fall through to the download link
+    } catch (err) {
+      // AbortError means the user deliberately cancelled the share sheet:
+      // cancel should mean cancel, not "download anyway".
+      if (err.name === "AbortError") return;
+      // Any other rejection is a genuine failure, fall through to the download link.
     }
   }
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   link.download = "kinder-kalender-backup.json";
+  document.body.appendChild(link);
   link.click();
-  URL.revokeObjectURL(url);
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  window.alert("Sicherung gespeichert.");
 }
 
 function triggerRestore() {
@@ -967,7 +1184,12 @@ function handleRestoreFile(event) {
       return;
     }
     populateSettingsForm();
+    // Close the dialog before rendering: its ::backdrop covers the whole
+    // viewport, so leaving it open would hide the very calendar the restore
+    // just updated, and the user would have no way to tell anything changed.
+    document.getElementById("settingsDialog").close();
     render();
+    window.alert("Sicherung wiederhergestellt.");
   };
   reader.readAsText(file);
 }
@@ -1148,6 +1370,16 @@ function slideToMonth(delta, fromDx = 0, existingPeekCard = null) {
     card.removeEventListener("transitionend", onEnd);
     finish();
   });
+}
+
+/** Jumps straight back to the month containing today, from however many months away — the "Heute" affordance. */
+function goToToday() {
+  const todayMonth = startOfMonth(new Date());
+  if (dateKey(state.displayedMonth) === dateKey(todayMonth) || isViewportSliding()) return;
+  const delta =
+    (todayMonth.getFullYear() - state.displayedMonth.getFullYear()) * 12 +
+    (todayMonth.getMonth() - state.displayedMonth.getMonth());
+  slideToMonth(delta);
 }
 
 /** Slides the card and its preview back flat without changing the month — a drag that didn't clear the threshold. */
@@ -1373,9 +1605,23 @@ function initSwipeNavigation() {
   });
 }
 
+/** First-run discoverability hint for the tap/long-press gestures (see the
+ * "Notizen (Long-Press) sind nirgends auffindbar" review finding) — shown
+ * until the user dismisses it once, same pattern as #paintModeHint but
+ * persisted across sessions via localStorage instead of a live toggle. */
+function initNotesHint() {
+  const hint = document.getElementById("notesHint");
+  hint.hidden = localStorage.getItem("kk.notesHintDismissed") === "1";
+  document.getElementById("notesHintDismiss").addEventListener("click", () => {
+    hint.hidden = true;
+    localStorage.setItem("kk.notesHintDismissed", "1");
+  });
+}
+
 function init() {
   loadState();
   render();
+  initNotesHint();
   initSwipeNavigation();
   initPaintDragTracking();
 
@@ -1385,6 +1631,7 @@ function init() {
   document.getElementById("nextMonth").addEventListener("click", () => {
     if (!isViewportSliding()) slideToMonth(1);
   });
+  document.getElementById("todayBtn").addEventListener("click", goToToday);
 
   document.getElementById("paintModeBtn").addEventListener("click", () => {
     paintModeActive = !paintModeActive;
@@ -1392,6 +1639,7 @@ function init() {
     btn.classList.toggle("active", paintModeActive);
     btn.setAttribute("aria-pressed", String(paintModeActive));
     document.getElementById("dayGrid").classList.toggle("paint-mode", paintModeActive);
+    document.getElementById("paintModeHint").hidden = !paintModeActive;
   });
   document.getElementById("undoBtn").addEventListener("click", undoLastAction);
 
@@ -1405,6 +1653,17 @@ function init() {
     saveBrush();
     updateBrushActiveStyles();
   });
+  document.querySelector(".brush-group").addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    // Only two radios exist, so any arrow/Home/End press simply moves
+    // selection to the other one (roving tabindex + real selection change,
+    // per the WAI-ARIA radiogroup keyboard pattern).
+    state.activeBrush = state.activeBrush === "p1" ? "p2" : "p1";
+    saveBrush();
+    updateBrushActiveStyles();
+    document.getElementById(state.activeBrush === "p1" ? "p1Brush" : "p2Brush").focus();
+  });
 
   document.getElementById("settingsBtn").addEventListener("click", openSettings);
   wireSettingsInputs();
@@ -1412,6 +1671,14 @@ function init() {
   document.getElementById("shareBtn").addEventListener("click", shareCalendar);
 
   document.getElementById("noteDialog").addEventListener("close", closeNoteDialog);
+  // Löschen is destructive and instant (no undo support for notes), so
+  // require an explicit confirmation before letting the submit close the
+  // dialog and delete the note.
+  document.getElementById("noteDeleteBtn").addEventListener("click", (event) => {
+    if (!window.confirm("Notiz wirklich löschen?")) {
+      event.preventDefault();
+    }
+  });
   document.getElementById("exportBtn").addEventListener("click", exportBackup);
   document.getElementById("restoreBtn").addEventListener("click", triggerRestore);
   document.getElementById("restoreInput").addEventListener("change", handleRestoreFile);

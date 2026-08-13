@@ -2,14 +2,14 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Kinder Kalender</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Kinder Kalender">
-<meta name="theme-color" content="#3a3a3f">
+<meta name="theme-color" content="#f4f4f6">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -40,6 +40,7 @@
             <polyline points="9 6 15 12 9 18"/>
           </svg>
         </button>
+        <button id="todayBtn" class="today-btn">Heute</button>
       </div>
       <div class="topbar-end">
         <button id="paintModeBtn" class="icon-btn" aria-label="Mehrfachauswahl" aria-pressed="false">
@@ -68,22 +69,34 @@
     </header>
 
     <main>
+      <p id="paintModeHint" class="hint" hidden>Mehrfachauswahl aktiv – ziehen zum Markieren, Monatswechsel über die Pfeile</p>
+
       <div id="calendarViewport" class="calendar-viewport">
         <div id="calendarCard" class="calendar-card">
-          <h1 id="monthTitle" class="month-title"></h1>
+          <h1 id="monthTitle" class="month-title" aria-live="polite"></h1>
           <div class="weekday-row" id="weekdayRow"></div>
           <div class="day-grid" id="dayGrid"></div>
         </div>
       </div>
 
-      <div class="handover-row" id="handoverRow">
-        <span class="stat-chip">
-          <span class="dot" id="handoverDot"></span>
-          <span id="handoverLabel"></span>
-        </span>
+      <p id="notesHint" class="hint" hidden>
+        Tag antippen = markieren, lange drücken (halten) = Notiz hinzufügen.
+        <button type="button" id="notesHintDismiss" class="notes-hint-dismiss">Verstanden</button>
+      </p>
+
+      <div class="handover-wrap" aria-live="polite">
+        <div class="handover-row" id="handoverRow">
+          <span class="stat-chip">
+            <span class="dot" id="handoverDot"></span>
+            <span id="handoverLabel"></span>
+          </span>
+        </div>
+        <div class="handover-row" id="handoverPlaceholder">
+          <span class="stat-chip">Keine Übergabe in Sicht</span>
+        </div>
       </div>
 
-      <div class="stats-row">
+      <div class="stats-row" aria-live="polite">
         <span class="stat-chip">
           <span class="dot" id="p1StatDot"></span>
           <span id="p1StatLabel"></span>
@@ -96,29 +109,31 @@
     </main>
 
     <footer class="brush-bar">
-      <button class="brush-btn" id="p1Brush">
-        <span class="dot" id="p1Dot"></span>
-        <span id="p1Label">Papa</span>
-      </button>
-      <button class="brush-btn" id="p2Brush">
-        <span class="dot" id="p2Dot"></span>
-        <span id="p2Label">Mama</span>
-      </button>
+      <div class="brush-group" role="radiogroup" aria-label="Aktive Person zum Markieren">
+        <button class="brush-btn" id="p1Brush" role="radio" aria-checked="false" tabindex="0">
+          <span class="dot" id="p1Dot"></span>
+          <span id="p1Label">Papa</span>
+        </button>
+        <button class="brush-btn" id="p2Brush" role="radio" aria-checked="false" tabindex="-1">
+          <span class="dot" id="p2Dot"></span>
+          <span id="p2Label">Mama</span>
+        </button>
+      </div>
     </footer>
   </div>
 
-  <dialog id="settingsDialog" class="settings-dialog">
+  <dialog id="settingsDialog" class="settings-dialog" aria-labelledby="settingsDialogTitle" tabindex="-1">
     <form method="dialog" class="settings-form">
-      <h2>Einstellungen</h2>
-      <div class="person-group">
-        <span class="group-label">Person 1</span>
-        <input type="text" id="p1NameInput" maxlength="20" placeholder="Name">
-        <input type="color" id="p1ColorInput">
+      <h2 id="settingsDialogTitle">Einstellungen</h2>
+      <div class="person-group" role="group" aria-labelledby="person1GroupLabel">
+        <span class="group-label" id="person1GroupLabel">Person 1</span>
+        <input type="text" id="p1NameInput" maxlength="20" placeholder="Name" aria-label="Name Person 1">
+        <input type="color" id="p1ColorInput" aria-label="Farbe Person 1">
       </div>
-      <div class="person-group">
-        <span class="group-label">Person 2</span>
-        <input type="text" id="p2NameInput" maxlength="20" placeholder="Name">
-        <input type="color" id="p2ColorInput">
+      <div class="person-group" role="group" aria-labelledby="person2GroupLabel">
+        <span class="group-label" id="person2GroupLabel">Person 2</span>
+        <input type="text" id="p2NameInput" maxlength="20" placeholder="Name" aria-label="Name Person 2">
+        <input type="color" id="p2ColorInput" aria-label="Farbe Person 2">
       </div>
 
       <h2>Daten</h2>
@@ -132,7 +147,7 @@
     </form>
   </dialog>
 
-  <dialog id="noteDialog" class="settings-dialog">
+  <dialog id="noteDialog" class="settings-dialog" aria-labelledby="noteDialogTitle">
     <form method="dialog" class="settings-form">
       <h2 id="noteDialogTitle">Notiz</h2>
       <label>
@@ -141,8 +156,9 @@
       </label>
       <div class="settings-actions">
         <button type="submit" value="save" class="primary-btn">Speichern</button>
-        <button type="submit" value="delete" class="secondary-btn">Löschen</button>
+        <button type="submit" value="cancel" class="secondary-btn">Abbrechen</button>
       </div>
+      <button type="submit" value="delete" class="text-btn danger-btn" id="noteDeleteBtn">Notiz löschen</button>
     </form>
   </dialog>
 
