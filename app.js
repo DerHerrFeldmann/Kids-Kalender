@@ -815,6 +815,18 @@ function render() {
   refreshChrome();
 }
 
+// A "both" cell's diagonal-split colors are baked into its own
+// --cell-first/--cell-second at the point it's built (applyOwnerVisual),
+// not read live from --p1-color/--p2-color like plain owner cells' fill —
+// so a settings-only color change has to explicitly repaint already-rendered
+// split cells, or they keep showing the old color until the next full
+// render() (month change, reload, ...).
+function refreshSplitCellColors() {
+  for (const cell of document.querySelectorAll("#dayGrid .both")) {
+    applyOwnerVisual(cell, parseDateKey(cell.dataset.date));
+  }
+}
+
 /** The parts of render() that depend on entries/settings but not on the grid's own DOM — split out so a single-cell repaint (applyBrush) can refresh them without rebuilding all 42 cells. */
 function refreshChrome() {
   // The handover chip always refers to "today" (the next real-world switch),
@@ -1034,6 +1046,7 @@ function wireSettingsInputs() {
       document.documentElement.style.setProperty("--p1-color", state.settings.p1Color);
       document.documentElement.style.setProperty("--p2-color", state.settings.p2Color);
       applyInkVars();
+      refreshSplitCellColors();
       refreshChrome();
     };
     // Some WebKit versions are inconsistent about firing "input" for
