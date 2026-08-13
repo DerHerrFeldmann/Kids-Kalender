@@ -8,67 +8,73 @@
 // gates on (hover: none) and (pointer: coarse), so it only ever applies on an
 // actual touchscreen phone.
 const { test, expect } = require("@playwright/test");
-const { chromium } = require("@playwright/test");
+
+test.use({ serviceWorkers: "block" });
 
 async function htmlTransform(page) {
   return page.evaluate(() => getComputedStyle(document.documentElement).transform);
 }
 
 test("a landscape-shaped DESKTOP window (mouse/no touch) does not rotate <html>", async ({ browser }) => {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, hasTouch: false });
-  const page = await context.newPage();
-  await page.addInitScript(() => {
-    if (navigator.serviceWorker) {
-      navigator.serviceWorker.register = () => Promise.reject(new Error("disabled for test"));
-    }
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+    hasTouch: false,
+    serviceWorkers: "block",
   });
-  await page.goto("/index.html");
-  await page.waitForFunction(() => document.getElementById("dayGrid").children.length > 0);
+  try {
+    const page = await context.newPage();
+    await page.goto("/index.html");
+    await page.waitForFunction(() => document.getElementById("dayGrid").children.length > 0);
 
-  expect(await htmlTransform(page)).toBe("none");
+    expect(await htmlTransform(page)).toBe("none");
 
-  // The regression this guards against broke <dialog> centering specifically
-  // (position:fixed containing-block changes once a transform is present on
-  // an ancestor) -- assert the settings dialog still opens and is usable.
-  await page.click("#settingsBtn");
-  await expect(page.locator("#settingsDialog")).toBeVisible();
-
-  await context.close();
+    // The regression this guards against broke <dialog> centering specifically
+    // (position:fixed containing-block changes once a transform is present on
+    // an ancestor) -- assert the settings dialog still opens and is usable.
+    await page.click("#settingsBtn");
+    await expect(page.locator("#settingsDialog")).toBeVisible();
+  } finally {
+    await context.close();
+  }
 });
 
-test("a landscape-shaped TOUCH phone viewport does rotate <html> back to portrait", async () => {
-  const browser = await chromium.launch();
+test("a landscape-shaped TOUCH phone viewport does rotate <html> back to portrait", async ({ browser }) => {
   const context = await browser.newContext({
     viewport: { width: 926, height: 428 },
     hasTouch: true,
     isMobile: true,
+    serviceWorkers: "block",
   });
-  const page = await context.newPage();
-  await page.addInitScript(() => {
-    if (navigator.serviceWorker) {
-      navigator.serviceWorker.register = () => Promise.reject(new Error("disabled for test"));
-    }
-  });
-  await page.goto("/index.html");
-  await page.waitForFunction(() => document.getElementById("dayGrid").children.length > 0);
+  try {
+    const page = await context.newPage();
+    await page.goto("/index.html");
+    await page.waitForFunction(() => document.getElementById("dayGrid").children.length > 0);
 
-  expect(await htmlTransform(page)).not.toBe("none");
+    expect(await htmlTransform(page)).not.toBe("none");
 
-  // The rotated box should still exactly cover the physical viewport, and
-  // click coordinates should still resolve through the transform correctly.
-  const appBox = await page.evaluate(() => {
-    const r = document.querySelector(".app").getBoundingClientRect();
-    return { width: r.width, height: r.height };
-  });
-  expect(appBox.width).toBe(926);
-  expect(appBox.height).toBe(428);
+    // The rotated box should still exactly cover the physical viewport.
+    const appBox = await page.evaluate(() => {
+      const r = document.querySelector(".app").getBoundingClientRect();
+      return { width: r.width, height: r.height };
+    });
+    expect(appBox.width).toBe(926);
+    expect(appBox.height).toBe(428);
 
-  const todayBtn = await page.evaluate(() => {
-    const r = document.getElementById("todayBtn").getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  });
-  await page.mouse.click(todayBtn.x, todayBtn.y);
-  await expect(page.locator("#todayBtn")).toBeDisabled();
+    // Click coordinates should still resolve through the transform correctly.
+    // #todayBtn starts disabled (app boots on the current month), so navigate
+    // away first -- otherwise clicking anywhere at all would leave it
+    // "disabled" and the assertion below would pass without the click having
+    // actually landed on the button.
+    await page.evaluate(() => document.getElementById("prevMonth").click());
+    await expect(page.locator("#todayBtn")).toBeEnabled();
 
-  await browser.close();
+    const todayBtn = await page.evaluate(() => {
+      const r = document.getElementById("todayBtn").getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+    await page.mouse.click(todayBtn.x, todayBtn.y);
+    await expect(page.locator("#todayBtn")).toBeDisabled();
+  } finally {
+    await context.close();
+  }
 });

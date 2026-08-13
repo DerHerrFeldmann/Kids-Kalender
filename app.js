@@ -64,8 +64,8 @@ function inkOn(ink) {
 /** Recomputes --p1-ink/--p2-ink (+ their "-on" counterparts for the today-ring digit) from the currently committed owner colors and pushes them onto the document, so painted-cell text stays legible no matter which hex the color wells picked. */
 function applyInkVars() {
   const root = document.documentElement.style;
-  const p1Ink = inkFor(state.settings.p1Color);
-  const p2Ink = inkFor(state.settings.p2Color);
+  const p1Ink = inkFor(colorOf("p1"));
+  const p2Ink = inkFor(colorOf("p2"));
   root.setProperty("--p1-ink", p1Ink);
   root.setProperty("--p1-ink-on", inkOn(p1Ink));
   root.setProperty("--p2-ink", p2Ink);
@@ -1183,16 +1183,10 @@ function handleRestoreFile(event) {
     // note written to it.
     state.notes = asPlainObjectOrFallback(data.notes, {});
     state.splitOrder = migrateLegacyOwnerMap(data.splitOrder || {});
-    state.settings = { ...state.settings, ...(data.settings || {}) };
+    mergeLegacySettings(data.settings || {});
     // Undo records reference pre-restore values by key; replaying one now
     // would silently overwrite freshly restored data with stale state.
     undoStack = [];
-    for (const [legacyKey, newKey] of Object.entries(LEGACY_SETTINGS_KEYS)) {
-      if (data.settings && data.settings[legacyKey] !== undefined) {
-        state.settings[newKey] = data.settings[legacyKey];
-      }
-    }
-    sanitizeSettings(state.settings);
     try {
       saveEntryState();
       saveJSON("notes");
@@ -1322,6 +1316,14 @@ function isViewportSliding() {
   return document.getElementById("calendarViewport").classList.contains("sliding");
 }
 
+// Months have 5 or 6 week rows, so the incoming card's natural height can
+// differ from the current one — this blends between them by how far the
+// drag/slide has progressed (0 = still fully on cardHeight, 1 = fully on
+// peekHeight) instead of snapping once the transition lands.
+function blendedHeight(cardHeight, peekHeight, progress) {
+  return cardHeight + (peekHeight - cardHeight) * progress;
+}
+
 /** Positions the live card and its preview neighbor for a given horizontal drag offset `dx`. */
 function positionSlide(card, peekCard, peekDelta, dx, width) {
   const peekRestDx = peekDelta > 0 ? width : -width;
@@ -1379,7 +1381,7 @@ function slideToMonth(delta, fromDx = 0, existingPeekCard = null) {
   peekCard.style.transition = "none";
   viewport.style.transition = "none";
   positionSlide(card, peekCard, delta, fromDx, width);
-  viewport.style.height = `${cardHeight + (peekHeight - cardHeight) * (Math.abs(fromDx) / width)}px`;
+  viewport.style.height = `${blendedHeight(cardHeight, peekHeight, Math.abs(fromDx) / width)}px`;
   void card.offsetHeight;
 
   if (Math.abs(fromDx - targetDx) < 1) {
@@ -1574,11 +1576,7 @@ function initSwipeNavigation() {
     const clampedDx = Math.max(-width, Math.min(width, dx));
     lastDx = clampedDx;
     ensurePeek(clampedDx < 0 ? 1 : -1);
-    // Months have 5 or 6 week rows, so the incoming card's natural height
-    // can differ from the current one — blend the viewport towards it as
-    // the drag progresses instead of snapping once it lands.
-    const progress = Math.abs(clampedDx) / width;
-    viewport.style.height = `${cardHeight + (peekHeight - cardHeight) * progress}px`;
+    viewport.style.height = `${blendedHeight(cardHeight, peekHeight, Math.abs(clampedDx) / width)}px`;
     positionSlide(card, peekCard, peekDelta, clampedDx, width);
   });
 
