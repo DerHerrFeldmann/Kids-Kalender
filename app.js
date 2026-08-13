@@ -1,10 +1,11 @@
 const WEEKDAY_SYMBOLS = ["MO", "DI", "MI", "DO", "FR", "SA", "SO"];
+const LOCALE = "de-DE";
 
 // Mirrors --outside-opacity from styles.css, which the DOM grid applies
 // directly via CSS. The canvas export can't use CSS, so it reads the same
 // value here rather than hardcoding a second copy of the number.
 const OUTSIDE_MONTH_OPACITY =
-  parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--outside-opacity")) || 0.45;
+  parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--outside-opacity")) || 0.7;
 
 const DEFAULT_SETTINGS = {
   p1Name: "Papa",
@@ -89,6 +90,13 @@ let noteEditingDate = null;
 let longPressTimer = null;
 let longPressFired = false;
 
+function cancelPendingLongPress() {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+}
+
 // Whether the "Mehrfachauswahl" toggle is on; while it is, day-cell drags
 // paint instead of the viewport treating horizontal motion as a month swipe.
 let paintModeActive = false;
@@ -145,6 +153,14 @@ function ownerAt(date) {
   return state.entries[dateKey(date)] || "none";
 }
 
+function colorOf(brush) {
+  return brush === "p1" ? state.settings.p1Color : state.settings.p2Color;
+}
+
+function nameOf(brush) {
+  return brush === "p1" ? state.settings.p1Name : state.settings.p2Name;
+}
+
 /**
  * For a "both" day, decides which color starts the diagonal split (the base
  * fill) and which finishes it (the overlay triangle). This follows tap
@@ -156,7 +172,6 @@ function splitColorsFor(date) {
   const recorded = state.splitOrder[dateKey(date)];
   const firstBrush = recorded === "p1" || recorded === "p2" ? recorded : "p2";
   const secondBrush = firstBrush === "p1" ? "p2" : "p1";
-  const colorOf = (brush) => (brush === "p1" ? state.settings.p1Color : state.settings.p2Color);
   return { first: colorOf(firstBrush), second: colorOf(secondBrush) };
 }
 
@@ -199,7 +214,7 @@ function buildMonthCells(displayedMonth) {
 }
 
 function monthTitle(date) {
-  const monthName = date.toLocaleString("de-DE", { month: "long" }).toUpperCase();
+  const monthName = date.toLocaleString(LOCALE, { month: "long" }).toUpperCase();
   const yy = String(date.getFullYear()).slice(-2);
   return `${monthName} ${yy}`;
 }
@@ -239,7 +254,7 @@ function monthStats(displayedMonth) {
 }
 
 function formatNights(n) {
-  return n.toLocaleString("de-DE", { maximumFractionDigits: 1 });
+  return n.toLocaleString(LOCALE, { maximumFractionDigits: 1 });
 }
 
 const HANDOVER_HORIZON_DAYS = 60;
@@ -267,10 +282,6 @@ function findNextHandover(fromDate) {
   return null;
 }
 
-function formatHandoverDate(date) {
-  return date.toLocaleDateString("de-DE", { weekday: "short", day: "numeric", month: "short" });
-}
-
 // Plain JSON-object fields, each independently loaded/saved under its own
 // localStorage key so a corrupt value in one can't wipe the others.
 const JSON_FIELDS = {
@@ -278,14 +289,20 @@ const JSON_FIELDS = {
   notes: "kk.notes",
   splitOrder: "kk.splitOrder",
 };
+const SETTINGS_STORAGE_KEY = "kk.settings";
+const ACTIVE_BRUSH_STORAGE_KEY = "kk.activeBrush";
+const NOTES_HINT_DISMISSED_STORAGE_KEY = "kk.notesHintDismissed";
+
+// A literal "null"/number/array/etc is valid JSON but not a usable map.
+function asPlainObjectOrFallback(value, fallback) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : fallback;
+}
 
 function loadJSON(storageKey, fallback) {
   try {
     const raw = localStorage.getItem(storageKey);
-    const parsed = raw ? JSON.parse(raw) : fallback;
-    // A literal "null"/number/array/etc is valid JSON but not a usable map, so
-    // fall back rather than handing e.g. null or [] on to the owner migration.
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : fallback;
+    // Fall back rather than handing e.g. null or [] on to the owner migration.
+    return asPlainObjectOrFallback(raw ? JSON.parse(raw) : fallback, fallback);
   } catch {
     return fallback;
   }
@@ -293,6 +310,13 @@ function loadJSON(storageKey, fallback) {
 
 function saveJSON(stateKey) {
   localStorage.setItem(JSON_FIELDS[stateKey], JSON.stringify(state[stateKey]));
+}
+
+// "both" days keep a splitOrder entry alongside their entries entry (see
+// setOwner), so the two always need persisting together.
+function saveEntryState() {
+  saveJSON("entries");
+  saveJSON("splitOrder");
 }
 
 // Only these hold owner values ("mine"/"ex"/"p1"/"p2"); notes are free-form
@@ -394,44 +418,53 @@ function sanitizeSettings(settings) {
   return settings;
 }
 
+// Migrates old mine*/ex* keys into `state.settings` only as a fallback for
+// the case where the new key was never set, and deletes them afterwards. A
+// saved blob can carry both (a pre-rename save merged with newer p1*/p2*
+// edits since); unconditionally applying the legacy key here would keep
+// clobbering every fresh edit with the years-old value on every single load,
+// since nothing ever removed it from the persisted JSON before now.
+function mergeLegacySettings(savedSettings) {
+  state.settings = { ...state.settings, ...savedSettings };
+  for (const [legacyKey, newKey] of Object.entries(LEGACY_SETTINGS_KEYS)) {
+    if (savedSettings[legacyKey] !== undefined && savedSettings[newKey] === undefined) {
+      state.settings[newKey] = savedSettings[legacyKey];
+    }
+    delete state.settings[legacyKey];
+  }
+  sanitizeSettings(state.settings);
+}
+
 function loadState() {
   for (const [stateKey, storageKey] of Object.entries(JSON_FIELDS)) {
     const loaded = loadJSON(storageKey, {});
     state[stateKey] = OWNER_MAP_FIELDS.has(stateKey) ? migrateLegacyOwnerMap(loaded) : loaded;
   }
   try {
-    const savedSettings = JSON.parse(localStorage.getItem("kk.settings"));
-    if (savedSettings) {
-      state.settings = { ...state.settings, ...savedSettings };
-      // Migrate old mine*/ex* keys only as a fallback for the case where the
-      // new key was never set, and delete them afterwards. A saved blob can
-      // carry both (a pre-rename save merged with newer p1*/p2* edits since);
-      // unconditionally applying the legacy key here would keep clobbering
-      // every fresh edit with the years-old value on every single load,
-      // since nothing ever removed it from the persisted JSON before now.
-      for (const [legacyKey, newKey] of Object.entries(LEGACY_SETTINGS_KEYS)) {
-        if (savedSettings[legacyKey] !== undefined && savedSettings[newKey] === undefined) {
-          state.settings[newKey] = savedSettings[legacyKey];
-        }
-        delete state.settings[legacyKey];
-      }
-      sanitizeSettings(state.settings);
-    }
+    const savedSettings = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY));
+    if (savedSettings) mergeLegacySettings(savedSettings);
   } catch {
     // ignore malformed settings, defaults stay in place
   }
-  const savedBrush = migrateLegacyOwner(localStorage.getItem("kk.activeBrush"));
+  const savedBrush = migrateLegacyOwner(localStorage.getItem(ACTIVE_BRUSH_STORAGE_KEY));
   if (savedBrush === "p1" || savedBrush === "p2") {
     state.activeBrush = savedBrush;
   }
 }
 
 function saveSettings() {
-  localStorage.setItem("kk.settings", JSON.stringify(state.settings));
+  localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(state.settings));
 }
 
 function saveBrush() {
-  localStorage.setItem("kk.activeBrush", state.activeBrush);
+  localStorage.setItem(ACTIVE_BRUSH_STORAGE_KEY, state.activeBrush);
+}
+
+function pushUndoBatch(batch) {
+  undoStack.push(batch);
+  if (undoStack.length > UNDO_STACK_LIMIT) {
+    undoStack.shift();
+  }
 }
 
 // `null` stands in for "key was absent" — entries/splitOrder values are
@@ -446,10 +479,7 @@ function pushUndoRecord(key) {
     currentUndoBatch.push(record);
     return;
   }
-  undoStack.push([record]);
-  if (undoStack.length > UNDO_STACK_LIMIT) {
-    undoStack.shift();
-  }
+  pushUndoBatch([record]);
 }
 
 // Opens a batch so a run of setOwner() calls (one paint drag) lands in the
@@ -464,10 +494,7 @@ function commitUndoBatch() {
   const batch = currentUndoBatch;
   currentUndoBatch = null;
   if (batch.length === 0) return;
-  undoStack.push(batch);
-  if (undoStack.length > UNDO_STACK_LIMIT) {
-    undoStack.shift();
-  }
+  pushUndoBatch(batch);
 }
 
 // Every place that nulls or replaces paintDrag outside of endPaintDrag's own
@@ -478,8 +505,7 @@ function commitUndoBatch() {
 function flushPaintDrag() {
   if (paintDrag && paintDrag.committed) {
     commitUndoBatch();
-    saveJSON("entries");
-    saveJSON("splitOrder");
+    saveEntryState();
   }
   paintDrag = null;
 }
@@ -508,8 +534,7 @@ function undoLastAction() {
       state.splitOrder[key] = prevSplitOrder;
     }
   }
-  saveJSON("entries");
-  saveJSON("splitOrder");
+  saveEntryState();
   render();
 }
 
@@ -537,33 +562,32 @@ function setOwner(date, owner) {
 
 /** A tap only ever changes the one tapped cell, so — unlike a month change or restore — it doesn't need render()'s full grid teardown; repainting that cell plus the chrome that depends on the entries (handover/stats/undo) is enough. */
 function applyBrush(date, cell) {
-  const key = dateKey(date);
-  const current = state.entries[key] || "none";
-  setOwner(date, nextOwner(current, state.activeBrush));
-  saveJSON("entries");
-  saveJSON("splitOrder");
+  setOwner(date, nextOwner(ownerAt(date), state.activeBrush));
+  saveEntryState();
   applyOwnerVisual(cell, date);
   refreshChrome();
 }
 
+function setActiveBrush(brush) {
+  state.activeBrush = brush;
+  saveBrush();
+  updateBrushActiveStyles();
+}
+
 function updateBrushActiveStyles() {
-  const buttons = [
-    [document.getElementById("p1Brush"), "p1", state.settings.p1Color],
-    [document.getElementById("p2Brush"), "p2", state.settings.p2Color],
-  ];
-  for (const [btn, brush, color] of buttons) {
+  for (const brush of ["p1", "p2"]) {
+    const btn = document.getElementById(brush === "p1" ? "p1Brush" : "p2Brush");
     const selected = state.activeBrush === brush;
     btn.setAttribute("aria-checked", selected ? "true" : "false");
     btn.tabIndex = selected ? 0 : -1;
-    btn.style.background = selected ? `${color}33` : "";
+    btn.style.background = selected ? `${colorOf(brush)}33` : "";
   }
 }
 
 /** Textual equivalent of an owner's color, for aria-label — the color/split is otherwise the only cue for who has the child that day. */
 function ownerLabelText(owner) {
-  if (owner === "p1") return state.settings.p1Name;
-  if (owner === "p2") return state.settings.p2Name;
-  if (owner === "both") return `${state.settings.p1Name} und ${state.settings.p2Name}`;
+  if (owner === "both") return `${nameOf("p1")} und ${nameOf("p2")}`;
+  if (owner === "p1" || owner === "p2") return nameOf(owner);
   return "nicht zugeteilt";
 }
 
@@ -574,16 +598,15 @@ function ownerInitial(name) {
 
 /** Visible, non-color cue for who owns a day — a same-color viewer, grayscale display or B&W print still needs a way to tell owners apart (WCAG 1.4.1), so this renders the owner's initial(s) in the cell alongside the fill color. */
 function ownerGlyph(owner) {
-  if (owner === "p1") return ownerInitial(state.settings.p1Name);
-  if (owner === "p2") return ownerInitial(state.settings.p2Name);
-  if (owner === "both") return `${ownerInitial(state.settings.p1Name)}${ownerInitial(state.settings.p2Name)}`;
+  if (owner === "both") return `${ownerInitial(nameOf("p1"))}${ownerInitial(nameOf("p2"))}`;
+  if (owner === "p1" || owner === "p2") return ownerInitial(nameOf(owner));
   return "";
 }
 
-/** Applies owner-dependent classes/colors to an already-built cell — reused to repaint a cell live during a paint drag without rebuilding the whole grid. Also (re)builds the aria-label, since ownership and note presence are otherwise conveyed only by color/opacity and a bare dot. */
-function applyOwnerVisual(cell, date) {
+/** Applies owner-dependent classes/colors to an already-built cell — reused to repaint a cell live during a paint drag without rebuilding the whole grid. Also (re)builds the aria-label, since ownership and note presence are otherwise conveyed only by color/opacity and a bare dot. `info` lets a caller that already has describeCell(date)'s result (buildDayCell) pass it in instead of it being recomputed here. */
+function applyOwnerVisual(cell, date, info = describeCell(date)) {
   cell.classList.remove("p1", "p2", "both");
-  const { owner, split, hasNote, key } = describeCell(date);
+  const { owner, split, hasNote, key } = info;
   if (owner !== "none") {
     cell.classList.add(owner);
   }
@@ -606,10 +629,8 @@ function applyOwnerVisual(cell, date) {
     cell.style.removeProperty("--cell-second-ink");
     cell.style.removeProperty("--cell-second-ink-on");
   }
-  // Non-color cue for ownership (WCAG 1.4.1): the fill color alone doesn't
-  // survive a color-vision deficiency, a washed-out display or B&W print, so
-  // paint the owner's initial(s) on top of it too. aria-hidden since the
-  // cell's own aria-label already announces the owner in full.
+  // See ownerGlyph() for why this exists; aria-hidden since the cell's own
+  // aria-label (built below) already announces the owner in full.
   let mark = cell.querySelector(".owner-mark");
   if (owner === "none") {
     if (mark) mark.remove();
@@ -629,24 +650,25 @@ function applyOwnerVisual(cell, date) {
   cell.setAttribute("aria-label", label);
 }
 
-/** Builds a single day cell, styled but without the interactive listeners (added separately for the live grid). */
-function buildDayCell(date, current) {
+/** Builds a single day cell, styled but without the interactive listeners (added separately for the live grid). `todayKey` is computed once by the caller building a whole grid (render(), buildCardContent()) instead of per cell. */
+function buildDayCell(date, current, todayKey) {
   const cell = document.createElement("button");
   cell.className = "day-cell";
   if (!current) {
     cell.classList.add("outside");
   }
-  if (dateKey(date) === dateKey(new Date())) {
+  const info = describeCell(date);
+  if (info.key === todayKey) {
     cell.classList.add("today");
     cell.setAttribute("aria-current", "date");
   }
-  const { key, hasNote } = describeCell(date);
+  const { key, hasNote } = info;
   cell.dataset.date = key; // read back by paint-drag tracking, which finds cells via elementFromPoint rather than their own events
   // Documents the Space-to-open-note keyboard shortcut for assistive tech,
   // since it has no other discoverable affordance (see the keydown handler
   // wired up in render()).
   cell.setAttribute("aria-keyshortcuts", "Space");
-  applyOwnerVisual(cell, date);
+  applyOwnerVisual(cell, date, info);
   const num = document.createElement("span");
   num.className = "num";
   num.textContent = String(date.getDate());
@@ -657,6 +679,14 @@ function buildDayCell(date, current) {
     cell.appendChild(dot);
   }
   return cell;
+}
+
+function fillWeekdayRow(container) {
+  for (const symbol of WEEKDAY_SYMBOLS) {
+    const span = document.createElement("span");
+    span.textContent = symbol;
+    container.appendChild(span);
+  }
 }
 
 /** Builds a static, non-interactive calendar card for `month` — used as the sliding preview during a swipe. */
@@ -671,58 +701,46 @@ function buildCardContent(month) {
 
   const weekdayRow = document.createElement("div");
   weekdayRow.className = "weekday-row";
-  for (const symbol of WEEKDAY_SYMBOLS) {
-    const span = document.createElement("span");
-    span.textContent = symbol;
-    weekdayRow.appendChild(span);
-  }
+  fillWeekdayRow(weekdayRow);
   card.appendChild(weekdayRow);
 
   const grid = document.createElement("div");
   grid.className = "day-grid";
+  const todayKey = dateKey(new Date());
   for (const { date, current } of buildMonthCells(month)) {
-    grid.appendChild(buildDayCell(date, current));
+    grid.appendChild(buildDayCell(date, current, todayKey));
   }
   card.appendChild(grid);
 
   return card;
 }
 
-/**
- * Defers `fn` to its own task, off whatever handler scheduled it. Deliberately
- * a plain macrotask rather than requestIdleCallback: idle callbacks can be
- * delayed for many frames under any load, which would defeat pre-warming a
- * peek card for a swipe that starts moving right away; a fast follow-up task
- * still keeps the ~90-node build out of the handler that scheduled it.
- */
-function deferToNextTask(fn) {
-  setTimeout(fn, 0);
+/** Pushes the currently committed owner colors (and their derived inks) onto the document — shared by render() and the settings dialog's live color-input commit. */
+function applyOwnerColorVars() {
+  document.documentElement.style.setProperty("--p1-color", colorOf("p1"));
+  document.documentElement.style.setProperty("--p2-color", colorOf("p2"));
+  applyInkVars();
+}
+
+function isDisplayingCurrentMonth() {
+  return dateKey(state.displayedMonth) === dateKey(startOfMonth(new Date()));
 }
 
 function render() {
-  document.documentElement.style.setProperty("--p1-color", state.settings.p1Color);
-  document.documentElement.style.setProperty("--p2-color", state.settings.p2Color);
-  applyInkVars();
+  applyOwnerColorVars();
 
   document.getElementById("monthTitle").textContent = monthTitle(state.displayedMonth);
-  document.getElementById("todayBtn").disabled =
-    dateKey(state.displayedMonth) === dateKey(startOfMonth(new Date()));
+  document.getElementById("todayBtn").disabled = isDisplayingCurrentMonth();
 
+  // WEEKDAY_SYMBOLS never changes at runtime, so the row only needs
+  // building once rather than torn down and rebuilt on every render().
   const weekdayRow = document.getElementById("weekdayRow");
-  weekdayRow.innerHTML = "";
-  for (const symbol of WEEKDAY_SYMBOLS) {
-    const span = document.createElement("span");
-    span.textContent = symbol;
-    weekdayRow.appendChild(span);
-  }
+  if (!weekdayRow.childElementCount) fillWeekdayRow(weekdayRow);
 
   // A render() can land mid-long-press (e.g. switching months while a
   // press is pending); the grid below gets rebuilt either way, so any
   // scheduled note-dialog-open for the old cell must be cancelled with it.
-  if (longPressTimer) {
-    clearTimeout(longPressTimer);
-    longPressTimer = null;
-  }
+  cancelPendingLongPress();
   // Likewise, a paint drag holds a reference to its start cell — if
   // something forces a render mid-drag (normally render() only happens
   // *after* the drag's own pointerup), that reference would go stale.
@@ -738,8 +756,9 @@ function render() {
   const focusedDate = document.activeElement?.closest?.(".day-cell")?.dataset.date;
   grid.innerHTML = "";
   grid.classList.toggle("paint-mode", paintModeActive);
+  const todayKey = dateKey(new Date());
   for (const { date, current } of buildMonthCells(state.displayedMonth)) {
-    const cell = buildDayCell(date, current);
+    const cell = buildDayCell(date, current, todayKey);
 
     cell.addEventListener("pointerdown", (event) => {
       // longPressTimer/longPressFired are shared across all cells; a second
@@ -777,10 +796,7 @@ function render() {
       // Likewise, a second finger's release must not cancel the primary
       // press's still-pending timer.
       if (!event.isPrimary) return;
-      if (longPressTimer) {
-        clearTimeout(longPressTimer);
-        longPressTimer = null;
-      }
+      cancelPendingLongPress();
     };
     cell.addEventListener("pointerup", cancelLongPress);
     cell.addEventListener("pointerleave", cancelLongPress);
@@ -840,12 +856,13 @@ function refreshChrome() {
   const handoverRow = document.getElementById("handoverRow");
   const handoverPlaceholder = document.getElementById("handoverPlaceholder");
   if (handover) {
-    const name = handover.toOwner === "p1" ? state.settings.p1Name : state.settings.p2Name;
-    const color = handover.toOwner === "p1" ? state.settings.p1Color : state.settings.p2Color;
+    const name = nameOf(handover.toOwner);
+    const color = colorOf(handover.toOwner);
     handoverRow.style.display = "";
     handoverPlaceholder.style.display = "none";
     document.getElementById("handoverDot").style.background = color;
-    document.getElementById("handoverLabel").textContent = `Wechsel zu ${name} am ${formatHandoverDate(handover.date)}`;
+    const handoverDate = handover.date.toLocaleDateString(LOCALE, { weekday: "short", day: "numeric", month: "short" });
+    document.getElementById("handoverLabel").textContent = `Wechsel zu ${name} am ${handoverDate}`;
   } else {
     handoverRow.style.display = "none";
     handoverPlaceholder.style.display = "";
@@ -855,46 +872,40 @@ function refreshChrome() {
   // this row, so repeating it verbatim in every chip just adds redundant,
   // wrap-prone text — each chip only needs to state its own name/count.
   const stats = monthStats(state.displayedMonth);
-  document.getElementById("p1StatDot").style.background = state.settings.p1Color;
-  document.getElementById("p2StatDot").style.background = state.settings.p2Color;
-  document.getElementById("p1StatLabel").textContent = `${state.settings.p1Name} ${formatNights(stats.p1)} Nächte`;
-  document.getElementById("p2StatLabel").textContent = `${state.settings.p2Name} ${formatNights(stats.p2)} Nächte`;
-
-  document.getElementById("p1Label").textContent = state.settings.p1Name;
-  document.getElementById("p2Label").textContent = state.settings.p2Name;
-  document.getElementById("p1Dot").style.background = state.settings.p1Color;
-  document.getElementById("p2Dot").style.background = state.settings.p2Color;
+  for (const brush of ["p1", "p2"]) {
+    document.getElementById(`${brush}StatDot`).style.background = colorOf(brush);
+    document.getElementById(`${brush}StatLabel`).textContent = `${nameOf(brush)} ${formatNights(stats[brush])} Nächte`;
+    document.getElementById(`${brush}Label`).textContent = nameOf(brush);
+    document.getElementById(`${brush}Dot`).style.background = colorOf(brush);
+  }
   updateBrushActiveStyles();
   document.getElementById("undoBtn").disabled = undoStack.length === 0;
 }
 
-function drawCellBackground(ctx, rect, cell) {
+function drawCellBackground(ctx, rect, info) {
   const { x, y, w, h } = rect;
-  if (cell.owner === "none") {
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(x, y, w, h);
-    return;
-  }
-  if (cell.owner === "p1") {
-    ctx.fillStyle = state.settings.p1Color;
-    ctx.fillRect(x, y, w, h);
-    return;
-  }
-  if (cell.owner === "p2") {
-    ctx.fillStyle = state.settings.p2Color;
+  const solid = { none: LIGHT_INK, p1: colorOf("p1"), p2: colorOf("p2") }[info.owner];
+  if (solid) {
+    ctx.fillStyle = solid;
     ctx.fillRect(x, y, w, h);
     return;
   }
   // both: see splitColorsFor() for how first/second are decided
-  ctx.fillStyle = cell.split.first;
+  ctx.fillStyle = info.split.first;
   ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = cell.split.second;
+  ctx.fillStyle = info.split.second;
   ctx.beginPath();
   ctx.moveTo(x, y);
   ctx.lineTo(x + w, y);
   ctx.lineTo(x + w, y + h);
   ctx.closePath();
   ctx.fill();
+}
+
+const CANVAS_FONT_FAMILY = 'ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, sans-serif';
+
+function canvasFont(weight, size) {
+  return `${weight} ${size}px ${CANVAS_FONT_FAMILY}`;
 }
 
 function drawCalendarToCanvas(canvas) {
@@ -912,19 +923,19 @@ function drawCalendarToCanvas(canvas) {
   canvas.height = height;
   const ctx = canvas.getContext("2d");
 
-  ctx.fillStyle = "#ffffff";
+  ctx.fillStyle = LIGHT_INK;
   ctx.fillRect(0, 0, width, height);
 
-  ctx.fillStyle = "#1c1c1e";
-  ctx.font = "800 46px ui-rounded, \"SF Pro Rounded\", -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.fillStyle = DARK_INK;
+  ctx.font = canvasFont(800, 46);
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(monthTitle(state.displayedMonth), width / 2, headerH / 2);
 
   ctx.fillStyle = "#3a3a3f";
   ctx.fillRect(0, headerH, width, weekdayH);
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "700 20px ui-rounded, \"SF Pro Rounded\", -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.fillStyle = LIGHT_INK;
+  ctx.font = canvasFont(700, 20);
   WEEKDAY_SYMBOLS.forEach((symbol, i) => {
     ctx.fillText(symbol, i * cellW + cellW / 2, headerH + weekdayH / 2);
   });
@@ -938,18 +949,18 @@ function drawCalendarToCanvas(canvas) {
     ctx.globalAlpha = current ? 1 : OUTSIDE_MONTH_OPACITY;
     const cellInfo = describeCell(date);
     drawCellBackground(ctx, { x, y, w: cellW, h: cellH }, cellInfo);
-    ctx.fillStyle = "#1c1c1e";
-    ctx.font = "600 24px ui-rounded, \"SF Pro Rounded\", -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.fillStyle = DARK_INK;
+    ctx.font = canvasFont(600, 24);
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
     ctx.fillText(String(date.getDate()), x + 10, y + 8);
     if (cellInfo.hasNote) {
       ctx.beginPath();
-      ctx.fillStyle = "#1c1c1e";
+      ctx.fillStyle = DARK_INK;
       ctx.arc(x + cellW - 14, y + cellH - 14, 5, 0, Math.PI * 2);
       ctx.fill();
       ctx.lineWidth = 2;
-      ctx.strokeStyle = "#ffffff";
+      ctx.strokeStyle = LIGHT_INK;
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
@@ -1043,9 +1054,7 @@ function wireSettingsInputs() {
       // grid rebuild here is dead weight — the color wheel fires "input"
       // continuously while dragging, and render()'s innerHTML reset made
       // that visibly stutter even though the grid sits behind the modal.
-      document.documentElement.style.setProperty("--p1-color", state.settings.p1Color);
-      document.documentElement.style.setProperty("--p2-color", state.settings.p2Color);
-      applyInkVars();
+      applyOwnerColorVars();
       refreshSplitCellColors();
       refreshChrome();
     };
@@ -1070,7 +1079,7 @@ function closeSettings() {
 }
 
 function formatFullDate(date) {
-  return date.toLocaleDateString("de-DE", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  return date.toLocaleDateString(LOCALE, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 }
 
 function openNoteDialog(date) {
@@ -1172,8 +1181,7 @@ function handleRestoreFile(event) {
     // or an array, which also passes typeof === "object") must be rejected
     // here, or it lands in state.notes and JSON.stringify later drops every
     // note written to it.
-    state.notes =
-      data.notes && typeof data.notes === "object" && !Array.isArray(data.notes) ? data.notes : {};
+    state.notes = asPlainObjectOrFallback(data.notes, {});
     state.splitOrder = migrateLegacyOwnerMap(data.splitOrder || {});
     state.settings = { ...state.settings, ...(data.settings || {}) };
     // Undo records reference pre-restore values by key; replaying one now
@@ -1186,9 +1194,8 @@ function handleRestoreFile(event) {
     }
     sanitizeSettings(state.settings);
     try {
-      saveJSON("entries");
+      saveEntryState();
       saveJSON("notes");
-      saveJSON("splitOrder");
       saveSettings();
     } catch {
       // A backup that's merely well-formed JSON can still blow the localStorage
@@ -1265,14 +1272,9 @@ function paintAlongSegment(drag, x, y, startCell) {
 
 /** Locks in what this drag paints, decided once from the first cell — same rule a lone tap would have used (see nextOwner/COMBINE_TABLE). */
 function commitPaintDrag() {
-  if (longPressTimer) {
-    clearTimeout(longPressTimer);
-    longPressTimer = null;
-  }
+  cancelPendingLongPress();
   longPressFired = true; // swallow the click the start cell would otherwise get once the pointer is released elsewhere
-  const key = dateKey(paintDrag.date);
-  const current = state.entries[key] || "none";
-  paintDrag.owner = nextOwner(current, state.activeBrush);
+  paintDrag.owner = nextOwner(ownerAt(paintDrag.date), state.activeBrush);
   paintDrag.committed = true;
   beginUndoBatch(); // whole drag undoes as one step, not one record per painted cell
   // Painting the start cell itself is left to the caller's paintAlongSegment
@@ -1334,6 +1336,22 @@ function positionSlide(card, peekCard, peekDelta, dx, width) {
  * already built its own preview and moved partway) hand off into the same
  * motion instead of jumping; omit them for a plain button tap.
  */
+// Drops the peek card and snaps the live card/viewport back to their
+// resting (untransformed) state, without transitioning the reset itself —
+// shared by slideToMonth's and cancelSlide's finish(), which differ only in
+// whether they also commit a month change first.
+function resetSlideDom(card, viewport, peekCard) {
+  peekCard.remove();
+  card.style.transition = "none";
+  card.style.transform = "translateX(0px)";
+  viewport.style.transition = "none";
+  viewport.style.height = "";
+  void card.offsetHeight; // force reflow so the reset above isn't transitioned
+  card.style.transition = "";
+  viewport.style.transition = "";
+  viewport.classList.remove("sliding");
+}
+
 function slideToMonth(delta, fromDx = 0, existingPeekCard = null) {
   const viewport = document.getElementById("calendarViewport");
   const card = document.getElementById("calendarCard");
@@ -1354,15 +1372,7 @@ function slideToMonth(delta, fromDx = 0, existingPeekCard = null) {
 
   const finish = () => {
     changeMonth(delta);
-    peekCard.remove();
-    card.style.transition = "none";
-    card.style.transform = "translateX(0px)";
-    viewport.style.transition = "none";
-    viewport.style.height = "";
-    void card.offsetHeight; // force reflow so the reset above isn't transitioned
-    card.style.transition = "";
-    viewport.style.transition = "";
-    viewport.classList.remove("sliding");
+    resetSlideDom(card, viewport, peekCard);
   };
 
   card.style.transition = "none";
@@ -1395,7 +1405,7 @@ function slideToMonth(delta, fromDx = 0, existingPeekCard = null) {
 /** Jumps straight back to the month containing today, from however many months away — the "Heute" affordance. */
 function goToToday() {
   const todayMonth = startOfMonth(new Date());
-  if (dateKey(state.displayedMonth) === dateKey(todayMonth) || isViewportSliding()) return;
+  if (isDisplayingCurrentMonth() || isViewportSliding()) return;
   const delta =
     (todayMonth.getFullYear() - state.displayedMonth.getFullYear()) * 12 +
     (todayMonth.getMonth() - state.displayedMonth.getMonth());
@@ -1407,17 +1417,7 @@ function cancelSlide(fromDx, peekCard, peekDelta, width) {
   const viewport = document.getElementById("calendarViewport");
   const card = document.getElementById("calendarCard");
 
-  const finish = () => {
-    peekCard.remove();
-    card.style.transition = "none";
-    card.style.transform = "translateX(0px)";
-    viewport.style.transition = "none";
-    viewport.style.height = "";
-    void card.offsetHeight; // force reflow so the reset above isn't transitioned
-    card.style.transition = "";
-    viewport.style.transition = "";
-    viewport.classList.remove("sliding");
-  };
+  const finish = () => resetSlideDom(card, viewport, peekCard);
 
   if (Math.abs(fromDx) < 1) {
     finish();
@@ -1547,10 +1547,15 @@ function initSwipeNavigation() {
         if (!prewarmedDeltas.has(likelyDelta)) {
           prewarmedDeltas.add(likelyDelta);
           const pressPointerId = startPointerId;
-          deferToNextTask(() => {
+          // Deliberately a plain macrotask (setTimeout) rather than
+          // requestIdleCallback: idle callbacks can be delayed for many
+          // frames under any load, which would defeat pre-warming a peek
+          // card for a swipe that starts moving right away; a fast
+          // follow-up task still keeps the ~90-node build out of this handler.
+          setTimeout(() => {
             if (startPointerId !== pressPointerId) return; // this press already ended — the cache would just sit here unused
             if (!peeks[likelyDelta]) buildPeek(likelyDelta);
-          });
+          }, 0);
         }
       }
       if (Math.abs(dx) <= 10 || Math.abs(dx) <= Math.abs(dy) * 1.5) return;
@@ -1563,10 +1568,7 @@ function initSwipeNavigation() {
       cardHeight = card.getBoundingClientRect().height; // measure once — the card's height can't change mid-drag
       viewport.style.height = `${cardHeight}px`; // pin explicit height so it can be animated instead of jumping
       card.style.transition = "none";
-      if (longPressTimer) {
-        clearTimeout(longPressTimer);
-        longPressTimer = null;
-      }
+      cancelPendingLongPress();
       longPressFired = true; // swallow the click a real drag would otherwise leave behind
     }
     const clampedDx = Math.max(-width, Math.min(width, dx));
@@ -1600,13 +1602,7 @@ function initSwipeNavigation() {
         slideToMonth(-1, dx, peekDelta === -1 ? peekCard : null);
       } else cancelSlide(dx, peekCard, peekDelta, width);
     } else discardAllPeeks(); // a tap/long-press never touched ensurePeek — drop whatever the pre-warm above may have built
-    startX = null;
-    startY = null;
-    startPointerId = null;
-    isSwiping = false;
-    peekCard = null;
-    peekDelta = 0;
-    lastDx = 0;
+    resetGestureState();
   });
 
   document.addEventListener("pointercancel", (event) => {
@@ -1615,6 +1611,10 @@ function initSwipeNavigation() {
       discardOtherPeeks(peekDelta);
       cancelSlide(lastDx, peekCard, peekDelta, width);
     } else discardAllPeeks();
+    resetGestureState();
+  });
+
+  function resetGestureState() {
     startX = null;
     startY = null;
     startPointerId = null;
@@ -1622,19 +1622,18 @@ function initSwipeNavigation() {
     peekCard = null;
     peekDelta = 0;
     lastDx = 0;
-  });
+  }
 }
 
-/** First-run discoverability hint for the tap/long-press gestures (see the
- * "Notizen (Long-Press) sind nirgends auffindbar" review finding) — shown
+/** First-run discoverability hint for the tap/long-press gestures — shown
  * until the user dismisses it once, same pattern as #paintModeHint but
  * persisted across sessions via localStorage instead of a live toggle. */
 function initNotesHint() {
   const hint = document.getElementById("notesHint");
-  hint.hidden = localStorage.getItem("kk.notesHintDismissed") === "1";
+  hint.hidden = localStorage.getItem(NOTES_HINT_DISMISSED_STORAGE_KEY) === "1";
   document.getElementById("notesHintDismiss").addEventListener("click", () => {
     hint.hidden = true;
-    localStorage.setItem("kk.notesHintDismissed", "1");
+    localStorage.setItem(NOTES_HINT_DISMISSED_STORAGE_KEY, "1");
   });
 }
 
@@ -1663,25 +1662,15 @@ function init() {
   });
   document.getElementById("undoBtn").addEventListener("click", undoLastAction);
 
-  document.getElementById("p1Brush").addEventListener("click", () => {
-    state.activeBrush = "p1";
-    saveBrush();
-    updateBrushActiveStyles();
-  });
-  document.getElementById("p2Brush").addEventListener("click", () => {
-    state.activeBrush = "p2";
-    saveBrush();
-    updateBrushActiveStyles();
-  });
+  document.getElementById("p1Brush").addEventListener("click", () => setActiveBrush("p1"));
+  document.getElementById("p2Brush").addEventListener("click", () => setActiveBrush("p2"));
   document.querySelector(".brush-group").addEventListener("keydown", (event) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     // Only two radios exist, so any arrow/Home/End press simply moves
     // selection to the other one (roving tabindex + real selection change,
     // per the WAI-ARIA radiogroup keyboard pattern).
-    state.activeBrush = state.activeBrush === "p1" ? "p2" : "p1";
-    saveBrush();
-    updateBrushActiveStyles();
+    setActiveBrush(state.activeBrush === "p1" ? "p2" : "p1");
     document.getElementById(state.activeBrush === "p1" ? "p1Brush" : "p2Brush").focus();
   });
 

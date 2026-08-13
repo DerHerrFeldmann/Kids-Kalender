@@ -27,8 +27,6 @@
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
-  --space-5: 24px;
-  --space-6: 32px;
 
   /* Type scale — five steps, no ad-hoc sizes in between. */
   --font-xs: 12px;
@@ -90,6 +88,39 @@ html, body {
   padding-bottom: env(safe-area-inset-bottom);
 }
 
+/* This is a phone calendar; the grid/chrome is designed for a tall, narrow
+   layout and has no landscape variant. Since neither iOS Safari nor the web
+   app manifest support actually locking screen orientation, fake it: render
+   <html> as if the viewport were still portrait-shaped, then rotate that box
+   back onto the real (landscape) viewport so the app keeps its normal layout
+   instead of reflowing into a broken wide/short one. Only handles rotating
+   the phone one way (the far more common one, e.g. mute switch ending up on
+   top); rotating the other way leaves the app upside down rather than
+   reflowed, which is the accepted tradeoff of this CSS-only technique.
+   Gated on (hover: none) and (pointer: coarse), not just orientation, so it
+   only ever applies on an actual touchscreen phone -- a desktop/laptop
+   browser window that happens to be wider than tall (landscape by the same
+   media-feature test) must never get its <html> rotated. */
+@media screen and (orientation: landscape) and (hover: none) and (pointer: coarse) {
+  html {
+    position: fixed;
+    top: 100%;
+    left: 0;
+    width: 100vh;
+    height: 100vw;
+    transform: rotate(-90deg);
+    transform-origin: left top;
+    overflow-x: hidden;
+  }
+
+  /* 100dvh always resolves against the real (landscape) viewport, not
+     against html's rotated portrait-shaped box above, so .app would only
+     fill a fraction of it — pin it to html's own (now correct) height instead. */
+  .app {
+    min-height: 100%;
+  }
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -130,7 +161,8 @@ html, body {
   border: 1px solid var(--ink);
 }
 
-.icon-btn:disabled {
+.icon-btn:disabled,
+.today-btn:disabled {
   opacity: 0.3;
   pointer-events: none;
 }
@@ -247,11 +279,6 @@ main {
   min-height: 44px;
   border-radius: 999px;
   cursor: pointer;
-}
-
-.today-btn:disabled {
-  opacity: 0.3;
-  pointer-events: none;
 }
 
 .weekday-row {
