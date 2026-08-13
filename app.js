@@ -6,6 +6,13 @@ const WEEKDAY_SYMBOLS = ["MO", "DI", "MI", "DO", "FR", "SA", "SO"];
 const OUTSIDE_MONTH_OPACITY =
   parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--outside-opacity")) || 0.45;
 
+const DEFAULT_SETTINGS = {
+  p1Name: "Papa",
+  p2Name: "Mama",
+  p1Color: "#a3cf8f",
+  p2Color: "#f7dd86",
+};
+
 const state = {
   displayedMonth: startOfMonth(new Date()),
   entries: {},
@@ -14,12 +21,7 @@ const state = {
   // before the tap that combined it, so that color stays on the left/first
   // side of the diagonal split.
   splitOrder: {},
-  settings: {
-    p1Name: "Papa",
-    p2Name: "Mama",
-    p1Color: "#a3cf8f",
-    p2Color: "#f7dd86",
-  },
+  settings: { ...DEFAULT_SETTINGS },
   activeBrush: "p1",
 };
 
@@ -28,6 +30,30 @@ const state = {
 let noteEditingDate = null;
 let longPressTimer = null;
 let longPressFired = false;
+
+// Whether the "Mehrfachauswahl" toggle is on; while it is, day-cell drags
+// paint instead of the viewport treating horizontal motion as a month swipe.
+let paintModeActive = false;
+// Set for the duration of one pointer press-and-maybe-drag in paint mode.
+// `committed` flips true once the movement threshold is crossed, at which
+// point `owner` (decided once, from the first cell) is locked in; a press
+// that never crosses the threshold stays uncommitted and is left for the
+// normal click handler to treat as a plain tap.
+let paintDrag = null;
+
+// In-memory only — an undo history doesn't need to survive a reload, and
+// persisting it would mean reconciling it with edits made elsewhere (backup
+// restore, another tab) between sessions.
+// Each entry is a *batch*: the list of per-date records for one user
+// gesture, so undoLastAction() reverts a whole tap or a whole paint drag in
+// one step instead of one cell at a time.
+let undoStack = [];
+const UNDO_STACK_LIMIT = 20;
+
+// Set for the duration of one paint drag so every cell it touches lands in
+// the same undo batch; null outside a drag, when pushUndoRecord() commits
+// each record as its own single-record batch (a plain tap).
+let currentUndoBatch = null;
 
 function startOfMonth(date) {
   return new Date(date.getFullYear(), date.getMonth(), 1);
@@ -42,6 +68,11 @@ function dateKey(date) {
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const d = String(date.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
+}
+
+function parseDateKey(key) {
+  const [y, m, d] = key.split("-").map(Number);
+  return new Date(y, m - 1, d);
 }
 
 function mondayIndex(date) {
@@ -153,6 +184,35 @@ function formatNights(n) {
   return n.toLocaleString("de-DE", { maximumFractionDigits: 1 });
 }
 
+const HANDOVER_HORIZON_DAYS = 60;
+
+/**
+ * Only a switch into "p1" or "p2" counts as an announceable handover: a run
+ * of unfilled days ahead just means nobody's scheduled it yet (not a real
+ * switch), and a move into "both" is custody becoming shared rather than one
+ * parent taking sole charge. A move *out of* "both" (or out of "none") into
+ * a single person does count, since that's the moment someone takes over.
+ */
+function findNextHandover(fromDate) {
+  // Track the previous day's owner (not just today's), so a switch back to
+  // today's parent after a shared/unfilled stretch still counts as a handover.
+  let prevOwner = ownerAt(fromDate);
+  for (let i = 1; i <= HANDOVER_HORIZON_DAYS; i++) {
+    const date = addDays(fromDate, i);
+    const owner = ownerAt(date);
+    if ((owner === "p1" || owner === "p2") && owner !== prevOwner) {
+      return { date, fromOwner: prevOwner, toOwner: owner };
+    }
+    // Skip "none" days: a gap shouldn't reset who the last real owner was.
+    if (owner !== "none") prevOwner = owner;
+  }
+  return null;
+}
+
+function formatHandoverDate(date) {
+  return date.toLocaleDateString("de-DE", { weekday: "short", day: "numeric", month: "short" });
+}
+
 // Plain JSON-object fields, each independently loaded/saved under its own
 // localStorage key so a corrupt value in one can't wipe the others.
 const JSON_FIELDS = {
@@ -164,7 +224,10 @@ const JSON_FIELDS = {
 function loadJSON(storageKey, fallback) {
   try {
     const raw = localStorage.getItem(storageKey);
-    return raw ? JSON.parse(raw) : fallback;
+    const parsed = raw ? JSON.parse(raw) : fallback;
+    // A literal "null"/number/array/etc is valid JSON but not a usable map, so
+    // fall back rather than handing e.g. null or [] on to the owner migration.
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : fallback;
   } catch {
     return fallback;
   }
@@ -173,6 +236,10 @@ function loadJSON(storageKey, fallback) {
 function saveJSON(stateKey) {
   localStorage.setItem(JSON_FIELDS[stateKey], JSON.stringify(state[stateKey]));
 }
+
+// Only these hold owner values ("mine"/"ex"/"p1"/"p2"); notes are free-form
+// user text and must not be run through the owner migration below.
+const OWNER_MAP_FIELDS = new Set(["entries", "splitOrder"]);
 
 // One-time migration from the original "mine"/"ex" naming to the neutral
 // "p1"/"p2" scheme, so a calendar already filled in before this rename
@@ -183,10 +250,20 @@ function migrateLegacyOwner(value) {
   return value;
 }
 
+const VALID_OWNERS = new Set(["p1", "p2", "both"]);
+
 function migrateLegacyOwnerMap(map) {
   const migrated = {};
   for (const [key, value] of Object.entries(map)) {
-    migrated[key] = migrateLegacyOwner(value);
+    const owner = migrateLegacyOwner(value);
+    // Drop anything else (corrupt/hand-edited backup) instead of letting it
+    // reach classList.add later, where a stray space would throw and brick render().
+    if (VALID_OWNERS.has(owner)) {
+      // defineProperty (not migrated[key] = owner) so a "__proto__" key from
+      // an imported backup lands as a plain own property instead of invoking
+      // the accessor and re-parenting `migrated` into an undeletable entry.
+      Object.defineProperty(migrated, key, { value: owner, writable: true, enumerable: true, configurable: true });
+    }
   }
   return migrated;
 }
@@ -198,10 +275,31 @@ const LEGACY_SETTINGS_KEYS = {
   exColor: "p2Color",
 };
 
+const HEX_COLOR_RE = /^#[0-9a-f]{3,8}$/i;
+
+// Settings can come from localStorage or an imported backup file, both of
+// which a hand-edited/malicious file fully controls. Colors flow straight
+// into CSS custom properties (styles.css), so anything other than a plain
+// hex value (e.g. "url(https://evil.example/x)") would let a poisoned file
+// turn the offline app into a network beacon on every render. Reset
+// anything that isn't a valid hex color back to the default instead of
+// trusting the file.
+function sanitizeSettings(settings) {
+  for (const key of ["p1Color", "p2Color"]) {
+    if (typeof settings[key] !== "string" || !HEX_COLOR_RE.test(settings[key])) {
+      settings[key] = DEFAULT_SETTINGS[key];
+    }
+  }
+  for (const key of ["p1Name", "p2Name"]) {
+    settings[key] = String(settings[key] ?? "").trim() || DEFAULT_SETTINGS[key];
+  }
+  return settings;
+}
+
 function loadState() {
   for (const [stateKey, storageKey] of Object.entries(JSON_FIELDS)) {
     const loaded = loadJSON(storageKey, {});
-    state[stateKey] = stateKey === "settings" ? loaded : migrateLegacyOwnerMap(loaded);
+    state[stateKey] = OWNER_MAP_FIELDS.has(stateKey) ? migrateLegacyOwnerMap(loaded) : loaded;
   }
   try {
     const savedSettings = JSON.parse(localStorage.getItem("kk.settings"));
@@ -212,6 +310,7 @@ function loadState() {
           state.settings[newKey] = savedSettings[legacyKey];
         }
       }
+      sanitizeSettings(state.settings);
     }
   } catch {
     // ignore malformed settings, defaults stay in place
@@ -230,24 +329,116 @@ function saveBrush() {
   localStorage.setItem("kk.activeBrush", state.activeBrush);
 }
 
-function applyBrush(date) {
-  const key = dateKey(date);
-  const current = state.entries[key] || "none";
-  const updated = nextOwner(current, state.activeBrush);
-  if (updated === "none") {
-    delete state.entries[key];
-  } else {
-    state.entries[key] = updated;
+// `null` stands in for "key was absent" — entries/splitOrder values are
+// always non-empty strings, so it can't collide with a real prior value.
+function pushUndoRecord(key) {
+  const record = {
+    key,
+    prevEntry: Object.prototype.hasOwnProperty.call(state.entries, key) ? state.entries[key] : null,
+    prevSplitOrder: Object.prototype.hasOwnProperty.call(state.splitOrder, key) ? state.splitOrder[key] : null,
+  };
+  if (currentUndoBatch) {
+    currentUndoBatch.push(record);
+    return;
   }
-  if (updated === "both" && (current === "p1" || current === "p2")) {
-    // records the tap order for splitColorsFor()
-    state.splitOrder[key] = current;
-  } else if (updated !== "both") {
-    delete state.splitOrder[key];
+  undoStack.push([record]);
+  if (undoStack.length > UNDO_STACK_LIMIT) {
+    undoStack.shift();
+  }
+}
+
+// Opens a batch so a run of setOwner() calls (one paint drag) lands in the
+// undo stack as a single entry; must be paired with commitUndoBatch() once
+// the gesture ends, however it ends (pointerup, or a forced mid-drag render).
+function beginUndoBatch() {
+  currentUndoBatch = [];
+}
+
+function commitUndoBatch() {
+  if (currentUndoBatch === null) return;
+  const batch = currentUndoBatch;
+  currentUndoBatch = null;
+  if (batch.length === 0) return;
+  undoStack.push(batch);
+  if (undoStack.length > UNDO_STACK_LIMIT) {
+    undoStack.shift();
+  }
+}
+
+// Every place that nulls or replaces paintDrag outside of endPaintDrag's own
+// pointerup/pointercancel handling (a forced render, a long-press stealing
+// the gesture, a second pointerdown before release) must go through here —
+// otherwise a committed drag's undo batch never closes and currentUndoBatch
+// wedges open, silently swallowing all undo history from then on.
+function flushPaintDrag() {
+  if (paintDrag && paintDrag.committed) {
+    commitUndoBatch();
+    saveJSON("entries");
+    saveJSON("splitOrder");
+  }
+  paintDrag = null;
+}
+
+// Restores entries + splitOrder for every date in the popped batch together,
+// since a single tap (or drag-painted cell) can change both at once (e.g.
+// "both" -> "p2" also clears splitOrder) and reverting only one half would
+// leave the diagonal-split bookkeeping wrong. A batch holds one record per
+// date (paintCell dedupes touches within a drag), so order doesn't matter.
+function undoLastAction() {
+  if (undoStack.length === 0) return;
+  const batch = undoStack.pop();
+  // A batch's dates can be out of view by now (month navigation doesn't
+  // touch undoStack) — jump back to the batch's month first, or the revert
+  // would land invisibly on whatever month happens to be on screen.
+  state.displayedMonth = startOfMonth(parseDateKey(batch[0].key));
+  for (const { key, prevEntry, prevSplitOrder } of batch) {
+    if (prevEntry === null) {
+      delete state.entries[key];
+    } else {
+      state.entries[key] = prevEntry;
+    }
+    if (prevSplitOrder === null) {
+      delete state.splitOrder[key];
+    } else {
+      state.splitOrder[key] = prevSplitOrder;
+    }
   }
   saveJSON("entries");
   saveJSON("splitOrder");
   render();
+}
+
+/** Writes `owner` for one date, including the "both" splitOrder bookkeeping and undo tracking — no save/render, so drag-painting can call this per cell and only flush once. */
+function setOwner(date, owner) {
+  const key = dateKey(date);
+  pushUndoRecord(key);
+  if (owner === "none") {
+    delete state.entries[key];
+  } else {
+    state.entries[key] = owner;
+  }
+  if (owner === "both") {
+    // Combining to "both" always layers the active brush on top of the
+    // other one — true for a single tap (COMBINE_TABLE only reaches "both"
+    // from the non-active owner) and for drag-painting, where a cell can
+    // jump straight from "none" to "both" with no prior owner of its own.
+    // Deriving it from activeBrush instead of the cell's own prior state
+    // keeps every cell touched by one drag on the same diagonal split.
+    state.splitOrder[key] = state.activeBrush === "p1" ? "p2" : "p1";
+  } else {
+    delete state.splitOrder[key];
+  }
+}
+
+/** A tap only ever changes the one tapped cell, so — unlike a month change or restore — it doesn't need render()'s full grid teardown; repainting that cell plus the chrome that depends on the entries (handover/stats/undo) is enough. */
+function applyBrush(date, cell) {
+  const key = dateKey(date);
+  const current = state.entries[key] || "none";
+  setOwner(date, nextOwner(current, state.activeBrush));
+  saveJSON("entries");
+  saveJSON("splitOrder");
+  applyOwnerVisual(cell, date);
+  refreshChrome();
 }
 
 function updateBrushActiveStyles() {
@@ -266,6 +457,22 @@ function updateBrushActiveStyles() {
   }
 }
 
+/** Applies owner-dependent classes/colors to an already-built cell — reused to repaint a cell live during a paint drag without rebuilding the whole grid. */
+function applyOwnerVisual(cell, date) {
+  cell.classList.remove("p1", "p2", "both");
+  const { owner, split } = describeCell(date);
+  if (owner !== "none") {
+    cell.classList.add(owner);
+  }
+  if (split) {
+    cell.style.setProperty("--cell-first", split.first);
+    cell.style.setProperty("--cell-second", split.second);
+  } else {
+    cell.style.removeProperty("--cell-first");
+    cell.style.removeProperty("--cell-second");
+  }
+}
+
 /** Builds a single day cell, styled but without the interactive listeners (added separately for the live grid). */
 function buildDayCell(date, current) {
   const cell = document.createElement("button");
@@ -273,14 +480,9 @@ function buildDayCell(date, current) {
   if (!current) {
     cell.classList.add("outside");
   }
-  const { owner, hasNote, split } = describeCell(date);
-  if (owner !== "none") {
-    cell.classList.add(owner);
-  }
-  if (split) {
-    cell.style.setProperty("--cell-first", split.first);
-    cell.style.setProperty("--cell-second", split.second);
-  }
+  const { key, hasNote } = describeCell(date);
+  cell.dataset.date = key; // read back by paint-drag tracking, which finds cells via elementFromPoint rather than their own events
+  applyOwnerVisual(cell, date);
   const num = document.createElement("span");
   num.className = "num";
   num.textContent = String(date.getDate());
@@ -322,6 +524,17 @@ function buildCardContent(month) {
   return card;
 }
 
+/**
+ * Defers `fn` to its own task, off whatever handler scheduled it. Deliberately
+ * a plain macrotask rather than requestIdleCallback: idle callbacks can be
+ * delayed for many frames under any load, which would defeat pre-warming a
+ * peek card for a swipe that starts moving right away; a fast follow-up task
+ * still keeps the ~90-node build out of the handler that scheduled it.
+ */
+function deferToNextTask(fn) {
+  setTimeout(fn, 0);
+}
+
 function render() {
   document.documentElement.style.setProperty("--p1-color", state.settings.p1Color);
   document.documentElement.style.setProperty("--p2-color", state.settings.p2Color);
@@ -343,20 +556,54 @@ function render() {
     clearTimeout(longPressTimer);
     longPressTimer = null;
   }
+  // Likewise, a paint drag holds a reference to its start cell — if
+  // something forces a render mid-drag (normally render() only happens
+  // *after* the drag's own pointerup), that reference would go stale.
+  // Flush whatever was already painted so it isn't silently lost, then drop it.
+  flushPaintDrag();
 
   const grid = document.getElementById("dayGrid");
   grid.innerHTML = "";
+  grid.classList.toggle("paint-mode", paintModeActive);
   for (const { date, current } of buildMonthCells(state.displayedMonth)) {
     const cell = buildDayCell(date, current);
 
-    cell.addEventListener("pointerdown", () => {
+    cell.addEventListener("pointerdown", (event) => {
+      // longPressTimer/longPressFired are shared across all cells; a second
+      // finger touching down elsewhere must not steal that slot from (or
+      // reset the swallow flag for) whichever press already owns it.
+      if (!event.isPrimary) return;
       longPressFired = false;
       longPressTimer = setTimeout(() => {
         longPressFired = true;
+        // The dialog is taking over this press; drop the pending drag so a
+        // move afterwards doesn't flip this cell's color behind the modal.
+        flushPaintDrag();
         openNoteDialog(date);
       }, 500);
+      if (paintModeActive) {
+        // A second pointerdown before the previous drag's pointerup (e.g. a
+        // right-click while still holding the left button) would otherwise
+        // clobber an already-committed paintDrag without ever closing it.
+        flushPaintDrag();
+        paintDrag = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          lastX: event.clientX,
+          lastY: event.clientY,
+          startCell: cell,
+          date,
+          owner: null,
+          committed: false,
+          touched: new Set(),
+        };
+      }
     });
-    const cancelLongPress = () => {
+    const cancelLongPress = (event) => {
+      // Likewise, a second finger's release must not cancel the primary
+      // press's still-pending timer.
+      if (!event.isPrimary) return;
       if (longPressTimer) {
         clearTimeout(longPressTimer);
         longPressTimer = null;
@@ -370,10 +617,27 @@ function render() {
         longPressFired = false;
         return;
       }
-      applyBrush(date);
+      applyBrush(date, cell);
     });
 
     grid.appendChild(cell);
+  }
+
+  refreshChrome();
+}
+
+/** The parts of render() that depend on entries/settings but not on the grid's own DOM — split out so a single-cell repaint (applyBrush) can refresh them without rebuilding all 42 cells. */
+function refreshChrome() {
+  const handover = findNextHandover(new Date());
+  const handoverRow = document.getElementById("handoverRow");
+  if (handover) {
+    const name = handover.toOwner === "p1" ? state.settings.p1Name : state.settings.p2Name;
+    const color = handover.toOwner === "p1" ? state.settings.p1Color : state.settings.p2Color;
+    handoverRow.style.display = "";
+    document.getElementById("handoverDot").style.background = color;
+    document.getElementById("handoverLabel").textContent = `Wechsel zu ${name} am ${formatHandoverDate(handover.date)}`;
+  } else {
+    handoverRow.style.display = "none";
   }
 
   const stats = monthStats(state.displayedMonth);
@@ -387,6 +651,7 @@ function render() {
   document.getElementById("p1Dot").style.background = state.settings.p1Color;
   document.getElementById("p2Dot").style.background = state.settings.p2Color;
   updateBrushActiveStyles();
+  document.getElementById("undoBtn").disabled = undoStack.length === 0;
 }
 
 function drawCellBackground(ctx, rect, cell) {
@@ -524,21 +789,37 @@ function openSettings() {
   document.getElementById("settingsDialog").showModal();
 }
 
-// Saved on every keystroke/color pick, not just on dialog close: closing a
-// <dialog> relies on a "close" event that a background app-kill (e.g. iOS
-// suspending the PWA before the user's tap on "Fertig" is fully processed)
-// can skip entirely, which used to silently drop the change.
+// Only updates state.settings; does not save or render, so callers can
+// commit several fields and pay for one save+render instead of one each.
+// Returns whether the field's value actually changed, which both lets
+// callers skip the save+render entirely and de-duplicates the "input"/
+// "change" pair below (the second of the two is always a no-op commit).
 function commitSettingField(settingsKey, inputId, fallback) {
   const value = document.getElementById(inputId).value;
-  state.settings[settingsKey] = fallback ? value.trim() || fallback : value;
-  saveSettings();
-  render();
+  const next = fallback ? value.trim() || fallback : value;
+  if (next === state.settings[settingsKey]) return false;
+  state.settings[settingsKey] = next;
+  return true;
 }
 
 function wireSettingsInputs() {
   for (const { settingsKey, inputId, fallback } of SETTINGS_FIELDS) {
     const input = document.getElementById(inputId);
-    const commit = () => commitSettingField(settingsKey, inputId, fallback);
+    // Saved on every keystroke/color pick, not just on dialog close: closing
+    // a <dialog> relies on a "close" event that a background app-kill (e.g.
+    // iOS suspending the PWA before the user's tap on "Fertig" is fully
+    // processed) can skip entirely, which used to silently drop the change.
+    const commit = () => {
+      if (!commitSettingField(settingsKey, inputId, fallback)) return;
+      saveSettings();
+      // Not render(): settings never change which days are painted, so a
+      // grid rebuild here is dead weight — the color wheel fires "input"
+      // continuously while dragging, and render()'s innerHTML reset made
+      // that visibly stutter even though the grid sits behind the modal.
+      document.documentElement.style.setProperty("--p1-color", state.settings.p1Color);
+      document.documentElement.style.setProperty("--p2-color", state.settings.p2Color);
+      refreshChrome();
+    };
     // Some WebKit versions are inconsistent about firing "input" for
     // <input type="color">'s native swatch sheet — "change" is the one
     // event every browser reliably fires once a color is picked, so both
@@ -549,8 +830,13 @@ function wireSettingsInputs() {
 }
 
 function closeSettings() {
+  let changed = false;
   for (const { settingsKey, inputId, fallback } of SETTINGS_FIELDS) {
-    commitSettingField(settingsKey, inputId, fallback);
+    if (commitSettingField(settingsKey, inputId, fallback)) changed = true;
+  }
+  if (changed) {
+    saveSettings();
+    render();
   }
 }
 
@@ -638,19 +924,48 @@ function handleRestoreFile(event) {
     if (!window.confirm("Aktuelle Kalendereinträge und Einstellungen durch die Sicherung ersetzen?")) {
       return;
     }
+    const prevEntries = state.entries;
+    const prevNotes = state.notes;
+    const prevSplitOrder = state.splitOrder;
+    const prevSettings = state.settings;
+
     state.entries = migrateLegacyOwnerMap(data.entries || {});
-    state.notes = data.notes || {};
+    // Unlike entries/splitOrder, notes aren't run through a migration map that
+    // implicitly drops non-object input, so a bogus type (e.g. a bare number
+    // or an array, which also passes typeof === "object") must be rejected
+    // here, or it lands in state.notes and JSON.stringify later drops every
+    // note written to it.
+    state.notes =
+      data.notes && typeof data.notes === "object" && !Array.isArray(data.notes) ? data.notes : {};
     state.splitOrder = migrateLegacyOwnerMap(data.splitOrder || {});
     state.settings = { ...state.settings, ...(data.settings || {}) };
+    // Undo records reference pre-restore values by key; replaying one now
+    // would silently overwrite freshly restored data with stale state.
+    undoStack = [];
     for (const [legacyKey, newKey] of Object.entries(LEGACY_SETTINGS_KEYS)) {
       if (data.settings && data.settings[legacyKey] !== undefined) {
         state.settings[newKey] = data.settings[legacyKey];
       }
     }
-    saveJSON("entries");
-    saveJSON("notes");
-    saveJSON("splitOrder");
-    saveSettings();
+    sanitizeSettings(state.settings);
+    try {
+      saveJSON("entries");
+      saveJSON("notes");
+      saveJSON("splitOrder");
+      saveSettings();
+    } catch {
+      // A backup that's merely well-formed JSON can still blow the localStorage
+      // quota partway through these four writes; without rolling state back,
+      // the in-memory data and localStorage would end up permanently out of
+      // sync and every later save (e.g. the next applyBrush) would keep throwing.
+      state.entries = prevEntries;
+      state.notes = prevNotes;
+      state.splitOrder = prevSplitOrder;
+      state.settings = prevSettings;
+      window.alert("Sicherung konnte nicht gespeichert werden (vermutlich zu groß für den verfügbaren Speicher).");
+      render();
+      return;
+    }
     populateSettingsForm();
     render();
   };
@@ -660,6 +975,100 @@ function handleRestoreFile(event) {
 function changeMonth(delta) {
   state.displayedMonth = addMonths(state.displayedMonth, delta);
   render();
+}
+
+// Small on purpose: unlike the swipe gesture, a paint drag isn't fighting
+// over "horizontal vs. vertical", just "did the finger move at all" — it
+// only needs to tell a real drag apart from finger jitter during a tap.
+const PAINT_DRAG_THRESHOLD = 8;
+
+// Comfortably smaller than a day-cell, so stepping the segment at this
+// spacing can't jump clean over a cell even on a fast flick.
+const PAINT_DRAG_STEP = 12;
+
+function paintCell(cell, drag) {
+  const key = cell.dataset.date;
+  if (!key || drag.touched.has(key)) return;
+  drag.touched.add(key);
+  const date = parseDateKey(key);
+  setOwner(date, drag.owner);
+  applyOwnerVisual(cell, date);
+}
+
+/**
+ * A fast flick can deliver `pointermove` samples several cells apart, e.g.
+ * only Mo/Do/Su of a week — `elementFromPoint` on the sample alone would
+ * leave the cells in between unpainted. Walking the segment from the last
+ * sample to this one at sub-cell spacing visits every cell the pointer
+ * crossed, same as if the browser had delivered one sample per cell.
+ */
+function paintAlongSegment(drag, x, y, startCell) {
+  const steps = Math.max(1, Math.ceil(Math.hypot(x - drag.lastX, y - drag.lastY) / PAINT_DRAG_STEP));
+  // Two passes so hit-testing never reads layout that a previous step's own
+  // paint just dirtied — interleaving would force a fresh layout per cell.
+  // `startCell` (the drag's origin, painted on the same move that commits
+  // it) joins this batch too, since it's already known and needs no read.
+  const cells = startCell ? [startCell] : [];
+  for (let i = 1; i <= steps; i++) {
+    const px = drag.lastX + ((x - drag.lastX) * i) / steps;
+    const py = drag.lastY + ((y - drag.lastY) * i) / steps;
+    const target = document.elementFromPoint(px, py);
+    const cell = target && target.closest(".day-cell");
+    if (cell) cells.push(cell);
+  }
+  for (const cell of cells) paintCell(cell, drag);
+  drag.lastX = x;
+  drag.lastY = y;
+}
+
+/** Locks in what this drag paints, decided once from the first cell — same rule a lone tap would have used (see nextOwner/COMBINE_TABLE). */
+function commitPaintDrag() {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+  longPressFired = true; // swallow the click the start cell would otherwise get once the pointer is released elsewhere
+  const key = dateKey(paintDrag.date);
+  const current = state.entries[key] || "none";
+  paintDrag.owner = nextOwner(current, state.activeBrush);
+  paintDrag.committed = true;
+  beginUndoBatch(); // whole drag undoes as one step, not one record per painted cell
+  // Painting the start cell itself is left to the caller's paintAlongSegment
+  // batch, not done here, so its write doesn't land ahead of that batch's reads.
+}
+
+/**
+ * Tracks a paint drag once `pointerdown` on a day-cell has staged one (see
+ * render()). Touch gives the pressed cell implicit pointer capture, so its
+ * own `pointermove` won't fire for cells the finger passes over — instead
+ * this listens on `document` and re-resolves the cell under the pointer via
+ * `elementFromPoint` on every move, which also keeps working if the grid
+ * happens to get rebuilt mid-drag (see the paintDrag guard in render()).
+ */
+function initPaintDragTracking() {
+  document.addEventListener("pointermove", (event) => {
+    if (!paintDrag || event.pointerId !== paintDrag.pointerId) return;
+    let justCommitted = false;
+    if (!paintDrag.committed) {
+      const dx = event.clientX - paintDrag.startX;
+      const dy = event.clientY - paintDrag.startY;
+      if (Math.hypot(dx, dy) < PAINT_DRAG_THRESHOLD) return;
+      commitPaintDrag();
+      justCommitted = true;
+    }
+    paintAlongSegment(paintDrag, event.clientX, event.clientY, justCommitted ? paintDrag.startCell : null);
+  });
+
+  const endPaintDrag = (event) => {
+    if (!paintDrag || event.pointerId !== paintDrag.pointerId) return;
+    const wasCommitted = paintDrag.committed;
+    flushPaintDrag();
+    if (wasCommitted) {
+      refreshChrome(); // cells are already repainted by applyOwnerVisual; only stats/handover/undo need it
+    }
+  };
+  document.addEventListener("pointerup", endPaintDrag);
+  document.addEventListener("pointercancel", endPaintDrag);
 }
 
 const SWIPE_THRESHOLD = 60;
@@ -793,40 +1202,114 @@ function initSwipeNavigation() {
   const card = document.getElementById("calendarCard");
   let startX = null;
   let startY = null;
+  let startPointerId = null;
   let isSwiping = false;
   let width = 0;
   let peekCard = null;
   let peekDelta = 0;
   let lastDx = 0;
+  let cardHeight = 0;
+  let peekHeight = 0;
+  // Both neighbour cards (delta -1 and +1), keyed by delta, so a hesitant
+  // drag that wobbles back and forth across its own start point reuses the
+  // one it already built instead of tearing down and rebuilding a 42-cell
+  // card on every direction flip.
+  let peeks = {};
+  // Which direction(s) a pre-warm has already been scheduled for during this
+  // press, so a run of sub-threshold moves in the same direction doesn't
+  // queue up a redundant deferred build per move.
+  let prewarmedDeltas = new Set();
+
+  // Builds one neighbour card, appends it (parked off-screen, since nothing
+  // has positioned it yet) and caches it in `peeks`. Shared by ensurePeek's
+  // build-on-demand fallback and the pre-warm in the pointermove handler
+  // below, so there's one place that creates the ~90-node subtree and
+  // measures it.
+  const buildPeek = (delta) => {
+    const built = buildCardContent(addMonths(state.displayedMonth, delta));
+    built.classList.add("calendar-card--peek");
+    built.style.transition = "none";
+    // Rest it off-screen right away (same formula as positionSlide's
+    // peekRestDx for dx=0) — the pre-warm runs before any drag calls
+    // positionSlide itself, so without this it would briefly sit stacked on
+    // top of the visible card instead of hidden past the edge.
+    const restWidth = viewport.getBoundingClientRect().width;
+    built.style.transform = `translateX(${delta > 0 ? restWidth : -restWidth}px)`;
+    viewport.appendChild(built);
+    const height = built.getBoundingClientRect().height; // measure once on build, not per move — content/height are fixed for this peek card
+    const entry = { card: built, height };
+    peeks[delta] = entry;
+    return entry;
+  };
 
   const ensurePeek = (delta) => {
-    if (peekCard && peekDelta === delta) return;
-    if (peekCard) peekCard.remove();
+    if (peekDelta === delta && peekCard) return;
+    if (peekCard) positionSlide(card, peekCard, peekDelta, 0, width); // park the outgoing preview back at its resting edge instead of tearing it down
     peekDelta = delta;
-    peekCard = buildCardContent(addMonths(state.displayedMonth, delta));
-    peekCard.classList.add("calendar-card--peek");
-    peekCard.style.transition = "none";
-    viewport.appendChild(peekCard);
+    const entry = peeks[delta] || buildPeek(delta);
+    peekCard = entry.card;
+    peekHeight = entry.height;
+  };
+
+  // Drops the cached neighbour that lost out (if any), leaving only the one
+  // the gesture actually committed to for slideToMonth/cancelSlide to remove.
+  const discardOtherPeeks = (keepDelta) => {
+    for (const [delta, cached] of Object.entries(peeks)) {
+      if (Number(delta) !== keepDelta) cached.card.remove();
+    }
+    peeks = {};
+  };
+
+  // Drops every cached neighbour — used when a press ends without ever
+  // becoming a swipe (a tap, or a long-press), so the pre-warm below doesn't
+  // leave a card parked in the viewport forever with nothing to claim it.
+  const discardAllPeeks = () => {
+    for (const cached of Object.values(peeks)) cached.card.remove();
+    peeks = {};
   };
 
   viewport.addEventListener("pointerdown", (event) => {
-    if (isViewportSliding()) return;
+    if (isViewportSliding() || paintModeActive || startPointerId !== null) return; // a second finger touching down shouldn't hijack an in-progress gesture
+    startPointerId = event.pointerId;
     startX = event.clientX;
     startY = event.clientY;
     isSwiping = false;
+    prewarmedDeltas = new Set();
   });
 
   viewport.addEventListener("pointermove", (event) => {
-    if (startX === null) return;
+    if (startX === null || event.pointerId !== startPointerId) return; // ignore other fingers while one gesture owns the drag
     const dx = event.clientX - startX;
     const dy = event.clientY - startY;
     if (!isSwiping) {
+      // The very first few px already reveal which way this might go, well
+      // before the 10px activation threshold. Pre-warm that direction's card
+      // in a follow-up task now, so — for an actual swipe — it's already
+      // built (and its height already measured) by the time the threshold
+      // crosses, instead of paying for a ~90-node build + forced layout
+      // inside that handler. Most presses are a tap or a vertical scroll and
+      // never reach the threshold at all; those get cleaned up below
+      // (discardAllPeeks) once the press ends without becoming a swipe.
+      if (dx !== 0 && Math.abs(dx) > Math.abs(dy)) {
+        const likelyDelta = dx < 0 ? 1 : -1;
+        if (!prewarmedDeltas.has(likelyDelta)) {
+          prewarmedDeltas.add(likelyDelta);
+          const pressPointerId = startPointerId;
+          deferToNextTask(() => {
+            if (startPointerId !== pressPointerId) return; // this press already ended — the cache would just sit here unused
+            if (!peeks[likelyDelta]) buildPeek(likelyDelta);
+          });
+        }
+      }
       if (Math.abs(dx) <= 10 || Math.abs(dx) <= Math.abs(dy) * 1.5) return;
       isSwiping = true;
-      viewport.setPointerCapture(event.pointerId); // keep receiving move/up even once the finger strays outside the card
+      try {
+        viewport.setPointerCapture(event.pointerId); // keep receiving move/up even once the finger strays outside the card
+      } catch {} // pointer already gone (rare race) — don't abort the drag setup below and leave width/height unmeasured
       viewport.classList.add("sliding");
       width = viewport.getBoundingClientRect().width;
-      viewport.style.height = `${card.getBoundingClientRect().height}px`; // pin explicit height so it can be animated instead of jumping
+      cardHeight = card.getBoundingClientRect().height; // measure once — the card's height can't change mid-drag
+      viewport.style.height = `${cardHeight}px`; // pin explicit height so it can be animated instead of jumping
       card.style.transition = "none";
       if (longPressTimer) {
         clearTimeout(longPressTimer);
@@ -840,32 +1323,49 @@ function initSwipeNavigation() {
     // Months have 5 or 6 week rows, so the incoming card's natural height
     // can differ from the current one — blend the viewport towards it as
     // the drag progresses instead of snapping once it lands.
-    const cardHeight = card.getBoundingClientRect().height;
-    const peekHeight = peekCard.getBoundingClientRect().height;
     const progress = Math.abs(clampedDx) / width;
     viewport.style.height = `${cardHeight + (peekHeight - cardHeight) * progress}px`;
     positionSlide(card, peekCard, peekDelta, clampedDx, width);
   });
 
-  viewport.addEventListener("pointerup", (event) => {
+  // Listen on document, not viewport: before the swipe threshold is crossed
+  // there's no pointer capture yet, so a release over any other element
+  // (e.g. dragged onto a footer button) would never reach a viewport-scoped
+  // listener and would leave startPointerId stuck forever.
+  document.addEventListener("pointerup", (event) => {
+    if (event.pointerId !== startPointerId) return; // a second finger lifting shouldn't end someone else's gesture
     if (isSwiping) {
       const dx = Math.max(-width, Math.min(width, event.clientX - startX));
-      if (dx <= -SWIPE_THRESHOLD) slideToMonth(1, dx, peekDelta === 1 ? peekCard : null);
-      else if (dx >= SWIPE_THRESHOLD) slideToMonth(-1, dx, peekDelta === -1 ? peekCard : null);
-      else cancelSlide(dx, peekCard, peekDelta, width);
-    }
+      discardOtherPeeks(peekDelta);
+      // A stray extra pointer can move dx past the threshold in a direction
+      // that doesn't match the tracked preview — drop it so slideToMonth's
+      // fresh replacement doesn't leave it behind in the viewport.
+      if (dx <= -SWIPE_THRESHOLD) {
+        if (peekDelta !== 1) peekCard.remove();
+        slideToMonth(1, dx, peekDelta === 1 ? peekCard : null);
+      } else if (dx >= SWIPE_THRESHOLD) {
+        if (peekDelta !== -1) peekCard.remove();
+        slideToMonth(-1, dx, peekDelta === -1 ? peekCard : null);
+      } else cancelSlide(dx, peekCard, peekDelta, width);
+    } else discardAllPeeks(); // a tap/long-press never touched ensurePeek — drop whatever the pre-warm above may have built
     startX = null;
     startY = null;
+    startPointerId = null;
     isSwiping = false;
     peekCard = null;
     peekDelta = 0;
     lastDx = 0;
   });
 
-  viewport.addEventListener("pointercancel", () => {
-    if (isSwiping) cancelSlide(lastDx, peekCard, peekDelta, width);
+  document.addEventListener("pointercancel", (event) => {
+    if (event.pointerId !== startPointerId) return;
+    if (isSwiping) {
+      discardOtherPeeks(peekDelta);
+      cancelSlide(lastDx, peekCard, peekDelta, width);
+    } else discardAllPeeks();
     startX = null;
     startY = null;
+    startPointerId = null;
     isSwiping = false;
     peekCard = null;
     peekDelta = 0;
@@ -877,6 +1377,7 @@ function init() {
   loadState();
   render();
   initSwipeNavigation();
+  initPaintDragTracking();
 
   document.getElementById("prevMonth").addEventListener("click", () => {
     if (!isViewportSliding()) slideToMonth(-1);
@@ -884,6 +1385,15 @@ function init() {
   document.getElementById("nextMonth").addEventListener("click", () => {
     if (!isViewportSliding()) slideToMonth(1);
   });
+
+  document.getElementById("paintModeBtn").addEventListener("click", () => {
+    paintModeActive = !paintModeActive;
+    const btn = document.getElementById("paintModeBtn");
+    btn.classList.toggle("active", paintModeActive);
+    btn.setAttribute("aria-pressed", String(paintModeActive));
+    document.getElementById("dayGrid").classList.toggle("paint-mode", paintModeActive);
+  });
+  document.getElementById("undoBtn").addEventListener("click", undoLastAction);
 
   document.getElementById("p1Brush").addEventListener("click", () => {
     state.activeBrush = "p1";

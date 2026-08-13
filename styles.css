@@ -68,6 +68,11 @@ html, body {
   gap: 18px;
 }
 
+.topbar-end {
+  display: flex;
+  gap: 8px;
+}
+
 .icon-btn {
   appearance: none;
   -webkit-appearance: none;
@@ -79,6 +84,16 @@ html, body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  border-radius: 10px;
+}
+
+.icon-btn.active {
+  background: var(--chip-bg);
+}
+
+.icon-btn:disabled {
+  opacity: 0.3;
+  pointer-events: none;
 }
 
 .icon-btn svg {
@@ -143,6 +158,13 @@ main {
   grid-template-columns: repeat(7, 1fr);
 }
 
+/* Paint mode drags can move in any direction across cells, including ones
+   the browser would otherwise claim for native scrolling/zooming — turn
+   those off entirely while it's active so our own pointer tracking wins. */
+.day-grid.paint-mode {
+  touch-action: none;
+}
+
 .day-cell {
   position: relative;
   aspect-ratio: 0.82;
@@ -202,6 +224,12 @@ main {
   inset: 0;
   background: var(--cell-second, var(--p1-color));
   clip-path: polygon(0 0, 100% 0, 100% 100%);
+}
+
+.handover-row {
+  display: flex;
+  justify-content: center;
+  padding: 14px 0 0;
 }
 
 .stats-row {
