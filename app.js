@@ -409,10 +409,17 @@ function loadState() {
     const savedSettings = JSON.parse(debugLog.rawOnLoad);
     if (savedSettings) {
       state.settings = { ...state.settings, ...savedSettings };
+      // Migrate old mine*/ex* keys only as a fallback for the case where the
+      // new key was never set, and delete them afterwards. A saved blob can
+      // carry both (a pre-rename save merged with newer p1*/p2* edits since);
+      // unconditionally applying the legacy key here would keep clobbering
+      // every fresh edit with the years-old value on every single load,
+      // since nothing ever removed it from the persisted JSON before now.
       for (const [legacyKey, newKey] of Object.entries(LEGACY_SETTINGS_KEYS)) {
-        if (savedSettings[legacyKey] !== undefined) {
+        if (savedSettings[legacyKey] !== undefined && savedSettings[newKey] === undefined) {
           state.settings[newKey] = savedSettings[legacyKey];
         }
+        delete state.settings[legacyKey];
       }
       sanitizeSettings(state.settings);
     }
