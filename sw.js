@@ -32,7 +32,11 @@ self.addEventListener("fetch", (event) => {
     fetch(event.request)
       .then((response) => {
         if (response.ok) {
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, response.clone()));
+          // Keep the worker alive until the cache write lands — respondWith's
+          // promise already resolved with `response` by the time this runs,
+          // so without waitUntil the browser is free to kill the worker
+          // mid-write, silently leaving the offline fallback on a stale asset.
+          event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(event.request, response.clone())));
         }
         return response;
       })
