@@ -785,8 +785,6 @@ function render() {
           lastX: event.clientX,
           lastY: event.clientY,
           startCell: cell,
-          date,
-          owner: null,
           committed: false,
           touched: new Set(),
         };
@@ -1229,12 +1227,17 @@ const PAINT_DRAG_THRESHOLD = 8;
 // spacing can't jump clean over a cell even on a fast flick.
 const PAINT_DRAG_STEP = 12;
 
+// Each touched cell decides its own next owner from its own current owner —
+// the same nextOwner/COMBINE_TABLE rule a lone tap on that cell would have
+// used — so dragging across a day already owned by the other parent turns
+// it into a shared "both" day instead of silently overwriting it, exactly
+// like tapping it individually would.
 function paintCell(cell, drag) {
   const key = cell.dataset.date;
   if (!key || drag.touched.has(key)) return;
   drag.touched.add(key);
   const date = parseDateKey(key);
-  setOwner(date, drag.owner);
+  setOwner(date, nextOwner(ownerAt(date), state.activeBrush));
   applyOwnerVisual(cell, date);
 }
 
@@ -1264,11 +1267,10 @@ function paintAlongSegment(drag, x, y, startCell) {
   drag.lastY = y;
 }
 
-/** Locks in what this drag paints, decided once from the first cell — same rule a lone tap would have used (see nextOwner/COMBINE_TABLE). */
+/** Turns a pending press into a committed drag once it's moved far enough to count as one rather than a tap. */
 function commitPaintDrag() {
   cancelPendingLongPress();
   longPressFired = true; // swallow the click the start cell would otherwise get once the pointer is released elsewhere
-  paintDrag.owner = nextOwner(ownerAt(paintDrag.date), state.activeBrush);
   paintDrag.committed = true;
   beginUndoBatch(); // whole drag undoes as one step, not one record per painted cell
   // Painting the start cell itself is left to the caller's paintAlongSegment

@@ -1,33 +1,24 @@
-// Repro for review finding: "Drag-painting 'both' produces mirrored
-// diagonals within the same drag" (webapp/app.js:324, setOwner()).
+// Regression coverage for two related, previously-broken behaviors of
+// Mehrfachauswahl (paint-drag):
 //
-// Scenario (from the review): activeBrush = p2 ("Mama"); day 14 already
-// owned by p1 ("Papa"); days 15-17 are empty ("none"). In Mehrfachauswahl
-// mode the user presses on day 14 and drags through 15, 16, 17.
-// commitPaintDrag() locks drag.owner = "both" from the first cell and
-// paintCell() applies that same owner to every cell touched by the drag.
+// 1. Each touched cell now decides its own next owner from its OWN current
+//    owner (same nextOwner/COMBINE_TABLE rule a lone tap would use), instead
+//    of the whole drag being locked to one owner decided from the first
+//    cell touched. So dragging from day 14 (owned by p1) through days
+//    15-17 (empty), with active brush p2, must NOT turn every day "both" —
+//    only day 14 (the actual conflict) does; 15-17 become plain "p2".
 //
-// setOwner() only records state.splitOrder[key] when *that cell's own*
-// previous value was p1/p2:
-//   if (owner === "both" && (current === "p1" || current === "p2")) {
-//     state.splitOrder[key] = current;
-//   } else if (owner !== "both") {
-//     delete state.splitOrder[key];
-//   }
-// For day 14 current === "p1" -> splitOrder="p1" -> first(base) color = Papa.
-// For days 15-17 current === "none" -> neither branch runs -> splitOrder
-// stays unset -> splitColorsFor() falls back to its hardcoded default
-// firstBrush = "p2" -> first(base) color = Mama.
-//
-// Result: four days painted "both" in a single drag gesture render with two
-// different diagonal orientations (--cell-first/--cell-second CSS custom
-// properties differ), both in the live DOM grid and in the exported PNG
-// (drawCellBackground reads the same split via describeCell/splitColorsFor).
-//
-// This test FAILS on current app.js (orientations differ) and should PASS
-// once the fix makes every cell touched by one drag gesture share the same
-// split orientation.
-const { test } = require("@playwright/test");
+// 2. Original review finding this file used to cover on its own: "Drag-
+//    painting 'both' produces mirrored diagonals within the same drag"
+//    (webapp/app.js, setOwner()). state.splitOrder is derived purely from
+//    the drag's fixed state.activeBrush, not from each cell's own prior
+//    owner, so every "both" cell produced by ONE drag gesture — wherever it
+//    occurs, and regardless of what that cell's own previous owner was —
+//    must still share the same diagonal split orientation. Seeding day 16
+//    as a SECOND p1-owned day (also touched by the same drag) keeps this
+//    invariant covered even though the per-cell fix above means not every
+//    touched day becomes "both" anymore.
+const { test, expect } = require("@playwright/test");
 const assert = require("node:assert");
 
 // A mobile-sized viewport so the whole month grid (including the row
@@ -38,7 +29,7 @@ const assert = require("node:assert");
 // this test but can race with the drag below, so block it entirely.
 test.use({ viewport: { width: 480, height: 1000 }, serviceWorkers: "block" });
 
-test('all dragged "both" cells share one consistent split orientation', async ({ page }) => {
+test('per-cell owner is correct, and every "both" cell from one drag shares a consistent split orientation', async ({ page }) => {
   page.on("pageerror", (err) => console.log("PAGEERROR:", err.message));
 
   // First load just to get onto the right origin so we can seed localStorage.
@@ -61,10 +52,11 @@ test('all dragged "both" cells share one consistent split orientation', async ({
     };
   });
 
-  // Seed state: day 14 = p1 ("Papa"), 15-17 absent (="none"), active brush
-  // = p2 ("Mama"), and make sure there's no leftover splitOrder bookkeeping.
+  // Seed state: days 14 and 16 = p1 ("Papa"), 15 and 17 = empty, active
+  // brush = p2 ("Mama"), and make sure there's no leftover splitOrder
+  // bookkeeping.
   await page.evaluate((keys) => {
-    localStorage.setItem("kk.entries", JSON.stringify({ [keys.d14]: "p1" }));
+    localStorage.setItem("kk.entries", JSON.stringify({ [keys.d14]: "p1", [keys.d16]: "p1" }));
     localStorage.setItem("kk.splitOrder", JSON.stringify({}));
     localStorage.setItem("kk.activeBrush", "p2");
   }, dateKeys);
@@ -105,7 +97,8 @@ test('all dragged "both" cells share one consistent split orientation', async ({
   await page.mouse.move(c17.x, c17.y, { steps: 5 });
   await page.mouse.up();
 
-  // All four days should now be owner "both".
+  // Only the two actual conflicts (14, 16) become "both"; the empty days
+  // (15, 17) are simply painted with the active brush.
   const owners = await page.evaluate((keys) => {
     const cells = document.querySelectorAll("#dayGrid .day-cell");
     const byDate = {};
@@ -119,42 +112,29 @@ test('all dragged "both" cells share one consistent split orientation', async ({
       d17: ownerOf(byDate[keys.d17]),
     };
   }, dateKeys);
-  assert.deepStrictEqual(owners, { d14: "both", d15: "both", d16: "both", d17: "both" },
-    `expected all four dragged days to become "both", got ${JSON.stringify(owners)}`);
+  assert.deepStrictEqual(owners, { d14: "both", d15: "p2", d16: "both", d17: "p2" },
+    `expected only the conflicting days (14, 16) to become "both" and the empty days (15, 17) to be painted plain "p2", got ${JSON.stringify(owners)}`);
 
-  // The actual bug check: every cell touched by the *same* drag gesture must
-  // render with the same diagonal split orientation (--cell-first/--cell-second).
+  // The actual bug this file originally covered: every "both" cell produced
+  // by the *same* drag gesture must render with the same diagonal split
+  // orientation (--cell-first/--cell-second), regardless of what each
+  // cell's own prior owner was.
   const splits = await page.evaluate((keys) => {
     const cells = document.querySelectorAll("#dayGrid .day-cell");
     const byDate = {};
     for (const cell of cells) byDate[cell.dataset.date] = cell;
-    const splitOf = (cell) => ({
-      first: cell.style.getPropertyValue("--cell-first"),
-      second: cell.style.getPropertyValue("--cell-second"),
+    const splitOf = (key) => ({
+      first: byDate[key].style.getPropertyValue("--cell-first"),
+      second: byDate[key].style.getPropertyValue("--cell-second"),
     });
-    return {
-      d14: splitOf(byDate[keys.d14]),
-      d15: splitOf(byDate[keys.d15]),
-      d16: splitOf(byDate[keys.d16]),
-      d17: splitOf(byDate[keys.d17]),
-    };
+    return { d14: splitOf(keys.d14), d16: splitOf(keys.d16) };
   }, dateKeys);
 
-  console.log("splits after one drag gesture:", splits);
+  console.log("splits of the two 'both' days after one drag gesture:", splits);
 
-  assert.deepStrictEqual(
-    splits.d15,
-    splits.d14,
-    `day 15 split orientation ${JSON.stringify(splits.d15)} differs from day 14 ${JSON.stringify(splits.d14)} within the same drag gesture`
-  );
   assert.deepStrictEqual(
     splits.d16,
     splits.d14,
     `day 16 split orientation ${JSON.stringify(splits.d16)} differs from day 14 ${JSON.stringify(splits.d14)} within the same drag gesture`
-  );
-  assert.deepStrictEqual(
-    splits.d17,
-    splits.d14,
-    `day 17 split orientation ${JSON.stringify(splits.d17)} differs from day 14 ${JSON.stringify(splits.d14)} within the same drag gesture`
   );
 });
