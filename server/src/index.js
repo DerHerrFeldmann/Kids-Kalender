@@ -2,7 +2,7 @@ import { buildPushPayload } from "@block65/webcrypto-web-push";
 
 const SYNC_STALE_DAYS = 14;
 const SYNC_EXPIRE_DAYS = 60;
-const NOTIFICATION_HOURS = [10, 18]; // Europe/Berlin wall-clock hours
+const NOTIFICATION_HOURS = [10, 20]; // Europe/Berlin wall-clock hours
 const MAX_HANDOVERS_PER_SYNC = 90;
 const MAX_NOTE_LENGTH = 200;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
