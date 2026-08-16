@@ -282,6 +282,25 @@ function findNextHandover(fromDate) {
   return null;
 }
 
+// A separate walk rather than a generalization of findNextHandover: that
+// function's exact "first match or null" contract is pinned by dedicated
+// regression tests, and this feeds an unrelated feature (push-notification
+// sync, see "Push-Benachrichtigungen" below) that has no reason to risk
+// that contract just to share a loop.
+function listUpcomingHandovers(fromDate) {
+  const handovers = [];
+  let prevOwner = ownerAt(fromDate);
+  for (let i = 1; i <= HANDOVER_HORIZON_DAYS; i++) {
+    const date = addDays(fromDate, i);
+    const owner = ownerAt(date);
+    if ((owner === "p1" || owner === "p2") && owner !== prevOwner) {
+      handovers.push({ date, fromOwner: prevOwner, toOwner: owner });
+    }
+    if (owner !== "none") prevOwner = owner;
+  }
+  return handovers;
+}
+
 // Plain JSON-object fields, each independently loaded/saved under its own
 // localStorage key so a corrupt value in one can't wipe the others.
 const JSON_FIELDS = {
@@ -317,6 +336,7 @@ function saveJSON(stateKey) {
 function saveEntryState() {
   saveJSON("entries");
   saveJSON("splitOrder");
+  syncPushHandoversDebounced();
 }
 
 // Only these hold owner values ("mine"/"ex"/"p1"/"p2"); notes are free-form
@@ -1001,6 +1021,130 @@ const SETTINGS_FIELDS = [
   { settingsKey: "p2Color", inputId: "p2ColorInput" },
 ];
 
+// --- Push-Benachrichtigungen ----------------------------------------------
+// One shared backend (webapp/server/) serves every install; each device
+// subscribes to it separately and uploads its own locally computed handover
+// dates, since the calendar itself only ever lives in this device's
+// localStorage (see loadState/saveEntryState above) with no sync between
+// devices — so each phone's reminders only ever reflect its own copy.
+const VAPID_PUBLIC_KEY = "BKI3qQcYX0xsrDDw4mwhr3RLGGiXxVqFcgM1MPymBdqDMp9GDCmCKPDaCw_Zu1p6yxhac9velfmRn2ny421tmYo";
+const PUSH_API_BASE = "https://kids-kalender-push.markofeldmann-development.workers.dev";
+const PUSH_SUBSCRIPTION_ID_KEY = "kk.pushSubscriptionId";
+const PUSH_ENABLED_KEY = "kk.notificationsEnabled";
+const PUSH_SYNC_DEBOUNCE_MS = 1500;
+
+function isPushEnabled() {
+  return localStorage.getItem(PUSH_ENABLED_KEY) === "1";
+}
+
+// iOS only exposes Notification/PushManager to a PWA launched from its
+// home-screen icon, not to a page open in a regular Safari tab.
+function isStandaloneInstall() {
+  return window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+}
+
+function urlBase64ToUint8Array(base64) {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const base64Safe = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64Safe);
+  return Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
+}
+
+function buildHandoverPayload() {
+  return listUpcomingHandovers(new Date()).map((h) => ({
+    date: dateKey(h.date),
+    toOwnerName: state.settings[`${h.toOwner}Name`],
+  }));
+}
+
+let pushSyncTimer = null;
+
+// Fire-and-forget: offline, an unreachable backend, or a revoked
+// subscription must never block or surface an error in the calendar UI —
+// this is a best-effort reminder layered on an app that has to keep working
+// fully offline.
+function syncPushHandoversDebounced() {
+  if (!isPushEnabled()) return;
+  clearTimeout(pushSyncTimer);
+  pushSyncTimer = setTimeout(async () => {
+    const id = localStorage.getItem(PUSH_SUBSCRIPTION_ID_KEY);
+    if (!id) return;
+    try {
+      const res = await fetch(`${PUSH_API_BASE}/api/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, handovers: buildHandoverPayload() }),
+      });
+      // The backend forgot this subscription (expired/deleted) — drop the
+      // local flags so the settings dialog offers to re-enable instead of
+      // silently syncing into the void forever.
+      if (res.status === 404) {
+        localStorage.removeItem(PUSH_SUBSCRIPTION_ID_KEY);
+        localStorage.removeItem(PUSH_ENABLED_KEY);
+      }
+    } catch {
+      // Offline or backend unreachable — the next successful save/sync
+      // retries; nothing to recover here.
+    }
+  }, PUSH_SYNC_DEBOUNCE_MS);
+}
+
+async function enablePushNotifications() {
+  if (!isStandaloneInstall()) {
+    window.alert('Bitte zuerst über "Zum Home-Bildschirm" installieren und die App von dort öffnen.');
+    return;
+  }
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    window.alert("Push-Benachrichtigungen werden auf diesem Gerät nicht unterstützt.");
+    return;
+  }
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") {
+    window.alert("Benachrichtigungen wurden nicht erlaubt.");
+    return;
+  }
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+    });
+    const res = await fetch(`${PUSH_API_BASE}/api/subscribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subscription: subscription.toJSON() }),
+    });
+    if (!res.ok) throw new Error(`subscribe failed: ${res.status}`);
+    const { id } = await res.json();
+    localStorage.setItem(PUSH_SUBSCRIPTION_ID_KEY, id);
+    localStorage.setItem(PUSH_ENABLED_KEY, "1");
+    syncPushHandoversDebounced();
+  } catch {
+    window.alert("Benachrichtigungen konnten nicht aktiviert werden. Bitte später erneut versuchen.");
+  }
+  updateNotificationsButtonLabel();
+}
+
+async function disablePushNotifications() {
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    await subscription?.unsubscribe();
+  } catch {
+    // Best-effort only — clearing the local flags below is what actually
+    // stops this device from syncing/showing the button as enabled.
+  }
+  localStorage.removeItem(PUSH_SUBSCRIPTION_ID_KEY);
+  localStorage.removeItem(PUSH_ENABLED_KEY);
+  updateNotificationsButtonLabel();
+}
+
+function updateNotificationsButtonLabel() {
+  document.getElementById("notificationsBtn").textContent = isPushEnabled()
+    ? "Benachrichtigungen deaktivieren"
+    : "Benachrichtigungen aktivieren";
+}
+
 function populateSettingsForm() {
   for (const { settingsKey, inputId } of SETTINGS_FIELDS) {
     document.getElementById(inputId).value = state.settings[settingsKey];
@@ -1009,6 +1153,7 @@ function populateSettingsForm() {
 
 function openSettings() {
   populateSettingsForm();
+  updateNotificationsButtonLabel();
   const dialog = document.getElementById("settingsDialog");
   dialog.showModal();
   // Avoid auto-focusing the name text input (default first-focusable
@@ -1687,6 +1832,10 @@ function init() {
     if (!window.confirm("Notiz wirklich löschen?")) {
       event.preventDefault();
     }
+  });
+  document.getElementById("notificationsBtn").addEventListener("click", () => {
+    if (isPushEnabled()) disablePushNotifications();
+    else enablePushNotifications();
   });
   document.getElementById("exportBtn").addEventListener("click", exportBackup);
   document.getElementById("restoreBtn").addEventListener("click", triggerRestore);

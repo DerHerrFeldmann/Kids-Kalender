@@ -1,4 +1,4 @@
-const CACHE_NAME = "kk-cache-v3";
+const CACHE_NAME = "kk-cache-v4";
 const ASSETS = [
   "./",
   "./index.html",
@@ -41,5 +41,23 @@ self.addEventListener("fetch", (event) => {
         return response;
       })
       .catch(() => caches.match(event.request))
+  );
+});
+
+self.addEventListener("push", (event) => {
+  const data = event.data ? event.data.json() : {};
+  event.waitUntil(
+    self.registration.showNotification(data.title || "Kinder Kalender", { body: data.body || "" })
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: "window" }).then((clients) => {
+      const existing = clients.find((client) => client.url.includes(self.registration.scope));
+      if (existing) return existing.focus();
+      return self.clients.openWindow("./");
+    })
   );
 });
