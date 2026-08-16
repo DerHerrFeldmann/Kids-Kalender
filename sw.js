@@ -29,7 +29,11 @@ self.addEventListener("activate", (event) => {
 // only kicks in as a fallback when there's no connection at all.
 self.addEventListener("fetch", (event) => {
   event.respondWith(
-    fetch(event.request)
+    // A plain fetch() still honors the browser's ordinary HTTP cache, so a
+    // deploy landing within an asset's Cache-Control max-age window could
+    // silently keep serving the previous version despite this being
+    // "network-first" — no-store forces an actual round-trip every time.
+    fetch(event.request, { cache: "no-store" })
       .then((response) => {
         if (response.ok) {
           // Keep the worker alive until the cache write lands — respondWith's
