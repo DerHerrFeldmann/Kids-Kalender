@@ -4,6 +4,7 @@ const SYNC_STALE_DAYS = 14;
 const SYNC_EXPIRE_DAYS = 60;
 const NOTIFICATION_HOURS = [10, 18]; // Europe/Berlin wall-clock hours
 const MAX_HANDOVERS_PER_SYNC = 90;
+const MAX_NOTE_LENGTH = 200;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function corsHeaders(env, request) {
@@ -52,7 +53,12 @@ function sanitizeHandovers(handovers) {
         typeof h.toOwnerName === "string" &&
         h.toOwnerName.trim().length > 0
     )
-    .slice(0, MAX_HANDOVERS_PER_SYNC);
+    .slice(0, MAX_HANDOVERS_PER_SYNC)
+    .map((h) => ({
+      date: h.date,
+      toOwnerName: h.toOwnerName,
+      ...(typeof h.note === "string" && h.note.trim() ? { note: h.note.trim().slice(0, MAX_NOTE_LENGTH) } : {}),
+    }));
 }
 
 async function handleSubscribe(request, env, corsResponseHeaders) {
@@ -187,10 +193,13 @@ async function processSubscription(key, env, now, tomorrow, slot) {
     publicKey: env.VAPID_PUBLIC_KEY,
     privateKey: env.VAPID_PRIVATE_KEY,
   };
+  const body = handover.note
+    ? `Morgen übernimmt ${handover.toOwnerName} — "${handover.note}"`
+    : `Morgen übernimmt ${handover.toOwnerName}`;
   const message = {
     data: JSON.stringify({
       title: "Übergabe morgen",
-      body: `Morgen übernimmt ${handover.toOwnerName}`,
+      body,
     }),
     options: { ttl: 60 * 60 * 24 },
   };

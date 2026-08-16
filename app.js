@@ -1051,10 +1051,15 @@ function urlBase64ToUint8Array(base64) {
 }
 
 function buildHandoverPayload() {
-  return listUpcomingHandovers(new Date()).map((h) => ({
-    date: dateKey(h.date),
-    toOwnerName: state.settings[`${h.toOwner}Name`],
-  }));
+  return listUpcomingHandovers(new Date()).map((h) => {
+    const key = dateKey(h.date);
+    const note = state.notes[key];
+    return {
+      date: key,
+      toOwnerName: state.settings[`${h.toOwner}Name`],
+      ...(note ? { note } : {}),
+    };
+  });
 }
 
 let pushSyncTimer = null;
@@ -1251,6 +1256,7 @@ function closeNoteDialog() {
     }
   }
   saveJSON("notes");
+  syncPushHandoversDebounced();
   render();
 }
 
