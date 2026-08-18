@@ -51,9 +51,20 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener("push", (event) => {
   const data = event.data ? event.data.json() : {};
   event.waitUntil(
-    self.registration.showNotification(data.title || "Kinder Kalender", { body: data.body || "" })
+    Promise.all([
+      self.registration.showNotification(data.title || "Kinder Kalender", { body: data.body || "" }),
+      updateBadge(data.badge),
+    ])
   );
 });
+
+// `badge` is only present on the midnight countdown payload — other push
+// kinds (e.g. the eve-of-handover reminder) omit it so they don't clobber
+// whatever count the countdown last set on the home-screen icon.
+function updateBadge(badge) {
+  if (badge === undefined || !("setAppBadge" in navigator)) return Promise.resolve();
+  return badge > 0 ? navigator.setAppBadge(badge) : navigator.clearAppBadge();
+}
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
