@@ -8,11 +8,12 @@ binding = "PUSH_SUBS"
 id = "b5167e1abc18465d99faea9b28473d49"
 
 [triggers]
-# Covers 00:00, 10:00 and 21:00 Europe/Berlin year-round: each wall-clock
-# target has one UTC cron for CET (winter, UTC+1) and one for CEST (summer,
-# UTC+2) — src/index.js's scheduled() gates on the actual Berlin hour, so
-# only the entry matching the current season does anything.
-crons = ["0 22 * * *", "0 23 * * *", "0 8 * * *", "0 9 * * *", "0 19 * * *", "0 20 * * *"]
+# Covers 00:00 and 12:00 Europe/Berlin year-round: each wall-clock target has
+# one UTC cron for CET (winter, UTC+1) and one for CEST (summer, UTC+2) —
+# src/index.js's scheduled() gates on the actual Berlin hour, so only the
+# entry matching the current season does anything. Kept at 4 total crons —
+# the Workers Free plan caps at 5 per account.
+crons = ["0 22 * * *", "0 23 * * *", "0 10 * * *", "0 11 * * *"]
 
 [vars]
 VAPID_SUBJECT = "https://derherrfeldmann.github.io"

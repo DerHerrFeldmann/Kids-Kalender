@@ -861,6 +861,26 @@ function refreshSplitCellColors() {
   }
 }
 
+// The Badging API works independently of push permission/subscription, so
+// this keeps the home-screen icon's countdown in sync the moment the app is
+// open (initial render or right after an edit) instead of only moving once
+// a night when the server-side push fires.
+function updateAppBadge(handover) {
+  if (!("setAppBadge" in navigator)) return;
+  if (!handover) {
+    navigator.clearAppBadge();
+    return;
+  }
+  const today = new Date();
+  const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const daysLeft = Math.round((handover.date - todayMidnight) / 86400000);
+  if (daysLeft > 0) {
+    navigator.setAppBadge(daysLeft);
+  } else {
+    navigator.clearAppBadge();
+  }
+}
+
 /** The parts of render() that depend on entries/settings but not on the grid's own DOM — split out so a single-cell repaint (applyBrush) can refresh them without rebuilding all 42 cells. */
 function refreshChrome() {
   // The handover chip always refers to "today" (the next real-world switch),
@@ -871,6 +891,7 @@ function refreshChrome() {
   // display:none) so the stats row doesn't shift depending on whether a
   // handover happens to exist right now.
   const handover = findNextHandover(new Date());
+  updateAppBadge(handover);
   const handoverRow = document.getElementById("handoverRow");
   const handoverPlaceholder = document.getElementById("handoverPlaceholder");
   if (handover) {

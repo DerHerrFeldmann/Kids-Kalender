@@ -58,9 +58,6 @@ self.addEventListener("push", (event) => {
   );
 });
 
-// `badge` is only present on the midnight countdown payload — other push
-// kinds (e.g. the eve-of-handover reminder) omit it so they don't clobber
-// whatever count the countdown last set on the home-screen icon.
 function updateBadge(badge) {
   if (badge === undefined || !("setAppBadge" in navigator)) return Promise.resolve();
   return badge > 0 ? navigator.setAppBadge(badge) : navigator.clearAppBadge();

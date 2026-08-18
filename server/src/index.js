@@ -2,8 +2,10 @@ import { buildPushPayload } from "@block65/webcrypto-web-push";
 
 const SYNC_STALE_DAYS = 14;
 const SYNC_EXPIRE_DAYS = 60;
-const COUNTDOWN_HOUR = 0; // Europe/Berlin wall-clock hour for the badge countdown
-const NOTIFICATION_HOURS = [COUNTDOWN_HOUR, 10, 21]; // Europe/Berlin wall-clock hours
+// Europe/Berlin wall-clock hours for the countdown/badge check. Kept at just
+// two so the DST-doubled cron list (see wrangler.toml) stays under the
+// Workers Free plan's 5-cron-per-account cap.
+const CHECK_HOURS = [0, 12];
 const MAX_HANDOVERS_PER_SYNC = 90;
 const MAX_NOTE_LENGTH = 200;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -126,41 +128,27 @@ export default {
   },
 
   async scheduled(event, env) {
-    // Crons are UTC-only and can't express "00:00/10:00/21:00 Europe/Berlin"
-    // directly, so this fires six times a day (one UTC hour per target per
+    // Crons are UTC-only and can't express "00:00/12:00 Europe/Berlin"
+    // directly, so this fires four times a day (one UTC hour per target per
     // DST state) and only the firing that currently maps to one of
-    // NOTIFICATION_HOURS in Berlin time actually does anything — the rest
-    // are cheap no-ops.
+    // CHECK_HOURS in Berlin time actually does anything — the rest are
+    // cheap no-ops.
     const berlinHour = Number(
       new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Berlin", hour: "2-digit", hour12: false }).format(new Date())
     );
-    if (!NOTIFICATION_HOURS.includes(berlinHour)) return;
+    if (!CHECK_HOURS.includes(berlinHour)) return;
 
     const now = Date.now();
-    if (berlinHour === COUNTDOWN_HOUR) {
-      const today = todayBerlinDateKey();
-      const slot = `${today}:${berlinHour}`;
-      let cursor;
-      do {
-        const page = await env.PUSH_SUBS.list({ prefix: "sub:", cursor });
-        for (const { name: key } of page.keys) {
-          await processCountdown(key, env, now, today, slot);
-        }
-        cursor = page.cursor;
-      } while (cursor);
-      return;
-    }
-
-    const tomorrow = tomorrowBerlinDateKey();
-    // Distinct from `tomorrow` alone so the 10:00 and 18:00 slots each get
-    // to send their own notification instead of the second one being
-    // skipped as "already notified for that date".
-    const slot = `${tomorrow}:${berlinHour}`;
+    const today = todayBerlinDateKey();
+    // Distinct from `today` alone so the 00:00 and 12:00 slots each get to
+    // send their own notification instead of the second one being skipped
+    // as "already notified for that date".
+    const slot = `${today}:${berlinHour}`;
     let cursor;
     do {
       const page = await env.PUSH_SUBS.list({ prefix: "sub:", cursor });
       for (const { name: key } of page.keys) {
-        await processSubscription(key, env, now, tomorrow, slot);
+        await processCountdown(key, env, now, today, slot);
       }
       cursor = page.cursor;
     } while (cursor);
@@ -176,14 +164,6 @@ function berlinTodayParts() {
   }).formatToParts(new Date());
   const byType = Object.fromEntries(parts.map((p) => [p.type, p.value]));
   return { year: Number(byType.year), month: Number(byType.month), day: Number(byType.day) };
-}
-
-function tomorrowBerlinDateKey() {
-  const { year, month, day } = berlinTodayParts();
-  // Built from plain calendar numbers (not a real instant), so this addition
-  // can't be thrown off by the DST transition itself.
-  const t = new Date(Date.UTC(year, month - 1, day + 1));
-  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, "0")}-${String(t.getUTCDate()).padStart(2, "0")}`;
 }
 
 function todayBerlinDateKey() {
@@ -247,22 +227,6 @@ async function sendPush(key, env, record, slot, notification) {
   }
 }
 
-async function processSubscription(key, env, now, tomorrow, slot) {
-  const record = await loadEligibleSubscription(key, env, now, slot);
-  if (!record) return;
-
-  const handover = record.handovers.find((h) => h.date === tomorrow);
-  if (!handover) return;
-
-  const body = handover.note
-    ? `Morgen übernimmt ${handover.toOwnerName} — "${handover.note}"`
-    : `Morgen übernimmt ${handover.toOwnerName}`;
-  // No `badge` field here: this notification is about a specific upcoming
-  // handover, not the running countdown, so it must leave whatever badge
-  // the midnight countdown last set untouched (see sw.js's push handler).
-  await sendPush(key, env, record, slot, { title: "Übergabe morgen", body });
-}
-
 async function processCountdown(key, env, now, today, slot) {
   const record = await loadEligibleSubscription(key, env, now, slot);
   if (!record) return;
@@ -283,9 +247,13 @@ async function processCountdown(key, env, now, today, slot) {
   const body =
     daysLeft <= 0
       ? `Heute übernimmt ${next.toOwnerName}`
-      : `Noch ${daysLeft} ${daysLeft === 1 ? "Tag" : "Tage"}, dann übernimmt ${next.toOwnerName}`;
+      : daysLeft === 1
+        ? next.note
+          ? `Morgen übernimmt ${next.toOwnerName} — "${next.note}"`
+          : `Morgen übernimmt ${next.toOwnerName}`
+        : `Noch ${daysLeft} Tage, dann übernimmt ${next.toOwnerName}`;
   await sendPush(key, env, record, slot, {
-    title: "Wechsel-Countdown",
+    title: daysLeft <= 1 ? "Übergabe" : "Wechsel-Countdown",
     body,
     badge: daysLeft > 0 ? daysLeft : null,
   });
