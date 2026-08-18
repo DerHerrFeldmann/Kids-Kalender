@@ -2,10 +2,6 @@ import { buildPushPayload } from "@block65/webcrypto-web-push";
 
 const SYNC_STALE_DAYS = 14;
 const SYNC_EXPIRE_DAYS = 60;
-// Europe/Berlin wall-clock hours for the countdown/badge check. Kept at just
-// two so the DST-doubled cron list (see wrangler.toml) stays under the
-// Workers Free plan's 5-cron-per-account cap.
-const CHECK_HOURS = [0, 12];
 const MAX_HANDOVERS_PER_SYNC = 90;
 const MAX_NOTE_LENGTH = 200;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -128,22 +124,18 @@ export default {
   },
 
   async scheduled(event, env) {
-    // Crons are UTC-only and can't express "00:00/12:00 Europe/Berlin"
-    // directly, so this fires four times a day (one UTC hour per target per
-    // DST state) and only the firing that currently maps to one of
-    // CHECK_HOURS in Berlin time actually does anything — the rest are
-    // cheap no-ops.
-    const berlinHour = Number(
-      new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Berlin", hour: "2-digit", hour12: false }).format(new Date())
-    );
-    if (!CHECK_HOURS.includes(berlinHour)) return;
-
+    // Fixed UTC times rather than a Berlin-local check, to stay within the
+    // Workers Free plan's 5-cron-per-account cap (see wrangler.toml) — one
+    // cron per target instead of two (winter/summer) per target. This lands
+    // exactly on 00:00/12:00 Berlin during CET (winter) and drifts an hour
+    // to 01:00/13:00 during CEST (summer); acceptable slop for a countdown
+    // badge, unlike the old precise-time handover reminder it replaced.
     const now = Date.now();
     const today = todayBerlinDateKey();
-    // Distinct from `today` alone so the 00:00 and 12:00 slots each get to
-    // send their own notification instead of the second one being skipped
-    // as "already notified for that date".
-    const slot = `${today}:${berlinHour}`;
+    // `event.cron` distinguishes the two daily crons so each gets its own
+    // notification slot instead of the second one being skipped as
+    // "already notified for that date".
+    const slot = `${today}:${event.cron}`;
     let cursor;
     do {
       const page = await env.PUSH_SUBS.list({ prefix: "sub:", cursor });
