@@ -168,6 +168,18 @@
     </form>
   </dialog>
 
+  <dialog id="shareDialog" class="settings-dialog" aria-labelledby="shareDialogTitle">
+    <form method="dialog" class="settings-form">
+      <h2 id="shareDialogTitle">Teilen</h2>
+      <p class="settings-hint">Nur <strong id="shareDialogMonth"></strong> teilen — als Bild oder als Link, mit dem die andere Person die Termine direkt in ihre eigene App übernehmen kann.</p>
+      <div class="settings-actions">
+        <button type="submit" value="image" class="secondary-btn">Als Bild</button>
+        <button type="submit" value="link" class="secondary-btn">Als Link</button>
+      </div>
+      <button type="submit" value="" class="text-btn">Abbrechen</button>
+    </form>
+  </dialog>
+
   <input type="file" id="restoreInput" accept="application/json" style="display:none;">
 
   <canvas id="shareCanvas" style="display:none;"></canvas>

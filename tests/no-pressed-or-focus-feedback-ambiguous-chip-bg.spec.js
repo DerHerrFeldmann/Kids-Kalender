@@ -68,6 +68,12 @@ test("pressing an icon button gives visible feedback, and active/inactive states
   });
   await page.mouse.up();
 
+  // The mousedown+mouseup above is a real click, which now opens #shareDialog
+  // (choice between sharing as image vs. as a link) - close it via Escape
+  // (leaves dialog.returnValue as "", so no share action fires) before part 2
+  // interacts with the rest of the page.
+  await page.keyboard.press("Escape");
+
   assert.ok(
     duringPress.isActive,
     "sanity check failed: a real, held mouse-down on #shareBtn should put it in the :active state " +

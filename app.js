@@ -1385,6 +1385,154 @@ function handleRestoreFile(event) {
   reader.readAsText(file);
 }
 
+// --- Monat als Link teilen -------------------------------------------------
+// Complements shareCalendar() (a flattened PNG): this hands over the *data*
+// for one month as a link, so whoever opens it (e.g. from WhatsApp) gets the
+// days written into their own localStorage instead of a picture they'd have
+// to retype by hand.
+const SHARE_HASH_PREFIX = "#share=";
+
+// atob/btoa only handle Latin1 byte strings, so a note containing e.g. "ä"
+// would throw InvalidCharacterError without going through UTF-8 bytes first.
+function base64UrlEncode(text) {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  bytes.forEach((byte) => (binary += String.fromCharCode(byte)));
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64UrlDecode(encoded) {
+  const padded = encoded.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(padded + "=".repeat((4 - (padded.length % 4)) % 4));
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+function buildShareMonthPayload(month) {
+  const year = month.getFullYear();
+  const monthIndex = month.getMonth();
+  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+  const entries = {};
+  const notes = {};
+  const splitOrder = {};
+  for (let day = 1; day <= daysInMonth; day++) {
+    const key = dateKey(new Date(year, monthIndex, day));
+    if (state.entries[key]) entries[key] = state.entries[key];
+    if (state.notes[key]) notes[key] = state.notes[key];
+    if (state.splitOrder[key]) splitOrder[key] = state.splitOrder[key];
+  }
+  return { v: 1, y: year, m: monthIndex + 1, entries, notes, splitOrder };
+}
+
+async function shareMonthLink() {
+  const payload = buildShareMonthPayload(state.displayedMonth);
+  const encoded = base64UrlEncode(JSON.stringify(payload));
+  const url = `${location.origin}${location.pathname}${SHARE_HASH_PREFIX}${encoded}`;
+  const title = `Kinder Kalender – ${monthTitle(state.displayedMonth)}`;
+
+  if (navigator.share) {
+    try {
+      await navigator.share({ title, url });
+      return;
+    } catch (err) {
+      // AbortError means the user deliberately cancelled the share sheet:
+      // cancel should mean cancel, not "copy the link anyway".
+      if (err.name === "AbortError") return;
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    window.alert("Link kopiert – zum Verschicken einfügen.");
+  } catch {
+    window.prompt("Link kopieren:", url);
+  }
+}
+
+function parseShareHash() {
+  if (!location.hash.startsWith(SHARE_HASH_PREFIX)) return null;
+  try {
+    const payload = JSON.parse(base64UrlDecode(location.hash.slice(SHARE_HASH_PREFIX.length)));
+    if (!payload || typeof payload !== "object") return null;
+    if (!Number.isInteger(payload.y) || !Number.isInteger(payload.m) || payload.m < 1 || payload.m > 12) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+// Overwrites the whole target month, not just the keys the payload lists: a
+// day the sender cleared back to "none" simply has no `entries` key at all,
+// so leaving the recipient's own old value for that day untouched would
+// silently keep stale data around instead of replacing it as intended.
+// `monthKeys.has(key)` also guards against a payload's own maps claiming
+// dates outside the month it says it covers.
+function mergeSharedMonth(payload) {
+  const monthIndex = payload.m - 1;
+  const daysInMonth = new Date(payload.y, monthIndex + 1, 0).getDate();
+  const monthKeys = new Set();
+  for (let day = 1; day <= daysInMonth; day++) {
+    monthKeys.add(dateKey(new Date(payload.y, monthIndex, day)));
+  }
+  for (const key of monthKeys) {
+    delete state.entries[key];
+    delete state.notes[key];
+    delete state.splitOrder[key];
+  }
+
+  const sanitizedEntries = migrateLegacyOwnerMap(asPlainObjectOrFallback(payload.entries, {}));
+  const sanitizedSplitOrder = migrateLegacyOwnerMap(asPlainObjectOrFallback(payload.splitOrder, {}));
+  const sanitizedNotes = asPlainObjectOrFallback(payload.notes, {});
+
+  for (const [key, value] of Object.entries(sanitizedEntries)) {
+    if (monthKeys.has(key)) state.entries[key] = value;
+  }
+  for (const [key, value] of Object.entries(sanitizedSplitOrder)) {
+    if (monthKeys.has(key)) state.splitOrder[key] = value;
+  }
+  for (const [key, value] of Object.entries(sanitizedNotes)) {
+    if (monthKeys.has(key) && typeof value === "string" && value) state.notes[key] = value;
+  }
+
+  saveEntryState();
+  saveJSON("notes");
+}
+
+// Runs once at startup, before the first render, so an accepted import shows
+// up immediately instead of needing a second render pass.
+function handleIncomingShare() {
+  const payload = parseShareHash();
+  if (!payload) return;
+  // Strip the hash regardless of the user's choice below, so reloading (or
+  // the PWA relaunching on this URL later) can't re-trigger the same prompt
+  // or re-apply an already-handled import.
+  history.replaceState(null, "", location.pathname + location.search);
+
+  const monthLabel = monthTitle(new Date(payload.y, payload.m - 1, 1));
+  const dayCount = Object.keys(asPlainObjectOrFallback(payload.entries, {})).length;
+  const confirmed = window.confirm(
+    `Termine für ${monthLabel} übernehmen (${dayCount} Tag(e))?\nBestehende Einträge in diesem Monat werden dabei ersetzt.`
+  );
+  if (!confirmed) return;
+
+  mergeSharedMonth(payload);
+  state.displayedMonth = startOfMonth(new Date(payload.y, payload.m - 1, 1));
+}
+
+function openShareDialog() {
+  const dialog = document.getElementById("shareDialog");
+  dialog.returnValue = "";
+  document.getElementById("shareDialogMonth").textContent = monthTitle(state.displayedMonth);
+  dialog.showModal();
+}
+
+function closeShareDialog() {
+  const choice = document.getElementById("shareDialog").returnValue;
+  if (choice === "image") shareCalendar();
+  else if (choice === "link") shareMonthLink();
+}
+
 function changeMonth(delta) {
   state.displayedMonth = addMonths(state.displayedMonth, delta);
   render();
@@ -1811,6 +1959,7 @@ function initNotesHint() {
 
 function init() {
   loadState();
+  handleIncomingShare();
   render();
   initNotesHint();
   initSwipeNavigation();
@@ -1849,7 +1998,8 @@ function init() {
   document.getElementById("settingsBtn").addEventListener("click", openSettings);
   wireSettingsInputs();
   document.getElementById("settingsDialog").addEventListener("close", closeSettings);
-  document.getElementById("shareBtn").addEventListener("click", shareCalendar);
+  document.getElementById("shareBtn").addEventListener("click", openShareDialog);
+  document.getElementById("shareDialog").addEventListener("close", closeShareDialog);
 
   document.getElementById("noteDialog").addEventListener("close", closeNoteDialog);
   // Löschen is destructive and instant (no undo support for notes), so
