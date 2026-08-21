@@ -1499,8 +1499,15 @@ function mergeSharedMonth(payload) {
   saveJSON("notes");
 }
 
-// Runs once at startup, before the first render, so an accepted import shows
-// up immediately instead of needing a second render pass.
+// Set for the duration of an open #importDialog, so closeImportDialog() has
+// the payload to merge without re-decoding the (already stripped) hash.
+let pendingSharePayload = null;
+
+// window.confirm() silently no-ops in an iOS "Add to Home Screen" standalone
+// app - there's no browser chrome left to host the native dialog, so a
+// confirm() call there just returns false without ever showing anything to
+// the user. A same-page <dialog> (like every other prompt in this app) has
+// no such dependency on browser chrome and works the same in standalone mode.
 function handleIncomingShare() {
   const payload = parseShareHash();
   if (!payload) return;
@@ -1509,15 +1516,26 @@ function handleIncomingShare() {
   // or re-apply an already-handled import.
   history.replaceState(null, "", location.pathname + location.search);
 
+  pendingSharePayload = payload;
   const monthLabel = monthTitle(new Date(payload.y, payload.m - 1, 1));
   const dayCount = Object.keys(asPlainObjectOrFallback(payload.entries, {})).length;
-  const confirmed = window.confirm(
-    `Termine für ${monthLabel} übernehmen (${dayCount} Tag(e))?\nBestehende Einträge in diesem Monat werden dabei ersetzt.`
-  );
-  if (!confirmed) return;
+  document.getElementById("importDialogText").textContent =
+    `Termine für ${monthLabel} übernehmen (${dayCount} Tag(e))? Bestehende Einträge in diesem Monat werden dabei ersetzt.`;
+  const dialog = document.getElementById("importDialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+  dialog.focus();
+}
 
-  mergeSharedMonth(payload);
-  state.displayedMonth = startOfMonth(new Date(payload.y, payload.m - 1, 1));
+function closeImportDialog() {
+  const dialog = document.getElementById("importDialog");
+  if (dialog.returnValue === "accept" && pendingSharePayload) {
+    const payload = pendingSharePayload;
+    mergeSharedMonth(payload);
+    state.displayedMonth = startOfMonth(new Date(payload.y, payload.m - 1, 1));
+    render();
+  }
+  pendingSharePayload = null;
 }
 
 function openShareDialog() {
@@ -1964,8 +1982,8 @@ function initNotesHint() {
 
 function init() {
   loadState();
-  handleIncomingShare();
   render();
+  handleIncomingShare();
   initNotesHint();
   initSwipeNavigation();
   initPaintDragTracking();
@@ -2005,6 +2023,7 @@ function init() {
   document.getElementById("settingsDialog").addEventListener("close", closeSettings);
   document.getElementById("shareBtn").addEventListener("click", openShareDialog);
   document.getElementById("shareDialog").addEventListener("close", closeShareDialog);
+  document.getElementById("importDialog").addEventListener("close", closeImportDialog);
 
   document.getElementById("noteDialog").addEventListener("close", closeNoteDialog);
   // Löschen is destructive and instant (no undo support for notes), so

@@ -60,20 +60,18 @@ test("opening a shared-month link overwrites that month only, after confirmation
     );
   });
 
-  let confirmMessage = null;
-  page.once("dialog", (dialog) => {
-    confirmMessage = dialog.message();
-    dialog.accept();
-  });
-
   // A bare hash-only URL change from the current page would be a
   // same-document navigation (no reload, init() never re-runs) - opening a
   // link from WhatsApp is always a genuine fresh navigation, so force one.
   await page.goto("about:blank");
   await page.goto(shareUrl, { waitUntil: "load" });
-  await page.waitForFunction(() => document.getElementById("dayGrid").children.length > 0);
+  await page.waitForSelector("#importDialog[open]");
 
-  expect(confirmMessage).toContain("AUGUST");
+  const importText = await page.locator("#importDialogText").textContent();
+  expect(importText).toContain("AUGUST");
+
+  await page.locator('#importDialog button[value="accept"]').click();
+  await page.waitForFunction(() => document.getElementById("dayGrid").children.length > 0);
 
   const result = await page.evaluate(() => ({
     entries: state.entries,
@@ -107,10 +105,10 @@ test("declining the import prompt leaves the recipient's data unchanged", async 
     localStorage.setItem("kk.entries", JSON.stringify({ "2026-08-05": "p2" }));
   });
 
-  page.once("dialog", (dialog) => dialog.dismiss());
-
   await page.goto("about:blank");
   await page.goto(shareUrl, { waitUntil: "load" });
+  await page.waitForSelector("#importDialog[open]");
+  await page.locator('#importDialog button[value="decline"]').click();
   await page.waitForFunction(() => document.getElementById("dayGrid").children.length > 0);
 
   const result = await page.evaluate(() => ({

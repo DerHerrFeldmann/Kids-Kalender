@@ -180,6 +180,17 @@
     </form>
   </dialog>
 
+  <dialog id="importDialog" class="settings-dialog" aria-labelledby="importDialogTitle">
+    <form method="dialog" class="settings-form">
+      <h2 id="importDialogTitle">Termine übernehmen?</h2>
+      <p class="settings-hint" id="importDialogText"></p>
+      <div class="settings-actions">
+        <button type="submit" value="accept" class="primary-btn">Übernehmen</button>
+        <button type="submit" value="decline" class="secondary-btn">Ablehnen</button>
+      </div>
+    </form>
+  </dialog>
+
   <input type="file" id="restoreInput" accept="application/json" style="display:none;">
 
   <canvas id="shareCanvas" style="display:none;"></canvas>
