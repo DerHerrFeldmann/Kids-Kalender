@@ -1525,6 +1525,11 @@ function openShareDialog() {
   dialog.returnValue = "";
   document.getElementById("shareDialogMonth").textContent = monthTitle(state.displayedMonth);
   dialog.showModal();
+  // Avoid auto-focusing "Als Bild" (default first-focusable behaviour of
+  // showModal()), which draws a :focus-visible ring around it even though
+  // the user never interacted with it - focus the dialog itself instead,
+  // same as openSettings().
+  dialog.focus();
 }
 
 function closeShareDialog() {
